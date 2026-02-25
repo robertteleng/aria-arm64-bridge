@@ -42,7 +42,8 @@ mkdir -p build && cd build
 CC=clang CXX=clang++ cmake -G Ninja .. \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
     -DCMAKE_BUILD_TYPE=Release \
-    -DENABLE_LTO=ON
+    -DENABLE_LTO=ON \
+    -DBUILD_FEXCONFIG=OFF
 ninja -j$(nproc)
 
 echo "[4/4] Installing FEX-Emu..."

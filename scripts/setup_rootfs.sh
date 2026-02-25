@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Create x86_64 rootfs with Python 3.12 + projectaria-client-sdk
 # This rootfs is used by FEX-Emu to run x86_64 binaries
+#
+# IMPORTANT: FEX-Emu must be installed BEFORE running this script.
 set -euo pipefail
 
 echo "=== aria-arm64-bridge: x86_64 RootFS Setup ==="
@@ -9,32 +11,16 @@ echo ""
 ROOTFS_DIR="${ROOTFS_DIR:-$HOME/.fex-emu/rootfs}"
 ARIA_SDK_VERSION="${ARIA_SDK_VERSION:-2.2.0}"
 
-# --- Step 1: Download or create x86_64 rootfs ---
-echo "[1/3] Setting up x86_64 rootfs at $ROOTFS_DIR..."
-
-if [ -d "$ROOTFS_DIR" ]; then
-    echo "RootFS already exists at $ROOTFS_DIR"
-else
-    echo "Creating minimal x86_64 rootfs via debootstrap..."
-    sudo apt-get install -y debootstrap
-    sudo mkdir -p "$ROOTFS_DIR"
-    sudo debootstrap --arch=amd64 jammy "$ROOTFS_DIR" http://archive.ubuntu.com/ubuntu
-
-    # Install Python inside rootfs
-    echo "Installing Python 3.12 in rootfs..."
-    sudo chroot "$ROOTFS_DIR" /bin/bash -c "
-        apt-get update
-        apt-get install -y software-properties-common
-        add-apt-repository -y ppa:deadsnakes/ppa
-        apt-get update
-        apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip
-        python3.12 -m ensurepip --upgrade
-    "
+# Check FEX-Emu is installed
+if ! command -v FEXInterpreter &>/dev/null; then
+    echo "ERROR: FEX-Emu not found. Run ./setup_fex_emu.sh first."
+    exit 1
 fi
 
-# --- Step 2: Configure FEX-Emu to use this rootfs ---
-echo "[2/3] Configuring FEX-Emu rootfs path..."
+# --- Step 1: Configure FEX-Emu rootfs path (BEFORE anything else) ---
+echo "[1/5] Configuring FEX-Emu rootfs path..."
 mkdir -p "$HOME/.fex-emu"
+mkdir -p "$ROOTFS_DIR"
 cat > "$HOME/.fex-emu/Config.json" << EOF
 {
     "Config": {
@@ -42,22 +28,69 @@ cat > "$HOME/.fex-emu/Config.json" << EOF
     }
 }
 EOF
-echo "FEX config written to ~/.fex-emu/Config.json"
+echo "FEX config: RootFS=$ROOTFS_DIR"
 
-# --- Step 3: Install Aria SDK in rootfs ---
-echo "[3/3] Installing projectaria-client-sdk $ARIA_SDK_VERSION..."
-sudo chroot "$ROOTFS_DIR" /bin/bash -c "
-    python3.12 -m pip install \
-        projectaria-client-sdk==$ARIA_SDK_VERSION \
-        pyzmq \
-        numpy
+# --- Step 2: Create x86_64 rootfs via debootstrap ---
+echo "[2/5] Setting up x86_64 rootfs at $ROOTFS_DIR..."
+
+if [ -f "$ROOTFS_DIR/bin/ls" ]; then
+    echo "RootFS already exists, skipping debootstrap."
+else
+    echo "Installing debootstrap..."
+    sudo apt-get install -y debootstrap
+
+    # First stage: extract packages (cross-arch, no emulation needed)
+    echo "Debootstrap first stage (extracting amd64 packages)..."
+    sudo debootstrap --foreign --arch=amd64 jammy "$ROOTFS_DIR" http://archive.ubuntu.com/ubuntu
+
+    # Second stage: run package scripts via FEX-Emu
+    echo "Debootstrap second stage (configuring packages via FEX-Emu)..."
+    sudo env "FEX_ROOTFS=$ROOTFS_DIR" FEXInterpreter "$ROOTFS_DIR/debootstrap/debootstrap" \
+        --second-stage --second-stage-target "$ROOTFS_DIR"
+fi
+
+# --- Step 3: Mount filesystems for package installation ---
+echo "[3/5] Preparing rootfs environment..."
+
+cleanup() {
+    sudo umount "$ROOTFS_DIR/proc" 2>/dev/null || true
+    sudo umount "$ROOTFS_DIR/sys" 2>/dev/null || true
+    sudo umount "$ROOTFS_DIR/dev" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+sudo mount --bind /proc "$ROOTFS_DIR/proc" 2>/dev/null || true
+sudo mount --bind /sys "$ROOTFS_DIR/sys" 2>/dev/null || true
+sudo mount --bind /dev "$ROOTFS_DIR/dev" 2>/dev/null || true
+sudo cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
+
+# --- Step 4: Install Python 3.12 inside rootfs ---
+echo "[4/5] Installing Python 3.12 in rootfs..."
+
+# Use FEXBash to run commands that see the rootfs
+FEXBash -c "
+    sudo chroot $ROOTFS_DIR /bin/bash -c '
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y software-properties-common ca-certificates
+        add-apt-repository -y ppa:deadsnakes/ppa
+        apt-get update
+        apt-get install -y python3.12 python3.12-venv python3.12-dev python3-pip curl
+        python3.12 -m ensurepip --upgrade
+    '
 "
+
+# --- Step 5: Install Aria SDK in rootfs ---
+echo "[5/5] Installing projectaria-client-sdk $ARIA_SDK_VERSION..."
+FEXBash -c "python3.12 -m pip install \
+    projectaria-client-sdk==$ARIA_SDK_VERSION \
+    pyzmq \
+    numpy"
 
 echo ""
 echo "=== Verification ==="
-echo "Testing Python + aria import under FEX-Emu..."
-FEXBash -c "python3.12 -c 'print(\"Python x86_64 under FEX: OK\")'" 2>/dev/null \
-    || echo "NOTE: FEXBash test skipped (run on Jetson to verify)"
+echo "Testing Python under FEX-Emu..."
+FEXBash -c "python3.12 -c 'import sys; print(f\"Python {sys.version} under FEX: OK\")'"
 echo ""
 echo "RootFS ready at: $ROOTFS_DIR"
 echo "Next step: ./test_import.sh"

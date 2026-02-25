@@ -44,6 +44,30 @@ Documentación, investigación, setup del entorno.
 
 ---
 
+## Fase 1.5: projectaria-tools nativo ARM64
+
+**Goal:** `projectaria_tools` compilado y funcionando nativo en el Jetson (sin emulación).
+
+**Por qué:** aria-guard usa types de `projectaria_tools.core` para parsear frames y calibración:
+- `ImageDataRecord`, `MotionData` (sensor_data)
+- `device_calibration_from_json_string` (calibration)
+- `StreamId`, `data_provider` (stream IDs)
+
+### Hito 1.5.1 — Build desde source
+
+- [ ] Instalar dependencias de build (eigen3, boost, lz4, zstd, glog, etc.)
+- [ ] Clonar https://github.com/facebookresearch/projectaria_tools
+- [ ] Compilar con cmake en Jetson ARM64
+- [ ] Instalar wheel Python en el venv nativo de aria-guard
+
+### Hito 1.5.2 — Validación
+
+- [ ] `from projectaria_tools.core.sensor_data import ImageDataRecord` funciona
+- [ ] `from projectaria_tools.core.calibration import device_calibration_from_json_string` funciona
+- [ ] Documentar en DEVELOPER_DIARY.md
+
+---
+
 ## Fase 2: Streaming Test
 
 **Goal:** Recibir frames reales de las Aria glasses bajo FEX-Emu.
