@@ -15,7 +15,7 @@ DURATION="${1:-10}"
 echo "Will attempt to stream for $DURATION seconds..."
 echo ""
 
-FEXBash -c "python3.12 -c '
+FEXBash -c "python3 -c '
 import time
 import aria.sdk as aria
 

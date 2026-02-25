@@ -1,44 +1,36 @@
 # NEXT_SESSION.md
 
-## Contexto
+## Estado actual (2026-02-25)
 
-Se creó el repo `aria-arm64-bridge` para investigar cómo correr el Aria SDK (binario cerrado x86_64) en Jetson Orin Nano (ARM64) usando FEX-Emu como traductor binario.
+**Fase 1 COMPLETADA:** `import aria.sdk` funciona bajo FEX-Emu en Jetson Orin Nano.
 
-## Estado actual
+### Lo que funciona
+- FEX-Emu compilado e instalado en Jetson (JetPack R36.5.0)
+- RootFS Ubuntu 22.04 x86_64 con libstdc++ actualizada (gcc-13)
+- `import aria.sdk` — OK (libsdk_core.so 98 MB cargado)
+- `import aria.sdk_gen2` — OK (HTTP/2 streaming)
+- `from projectaria_tools.core.sensor_data import ImageDataRecord` — OK
+- Python 3.10 x86_64 bajo FEX-Emu
 
-- Fase 0 completa: documentación, research, scripts de setup
-- Todo el research está en [RESEARCH.md](RESEARCH.md) — internals del SDK, alternativas evaluadas, decisión de usar FEX-Emu
-- 4 scripts listos en `scripts/`: setup_fex_emu.sh, setup_rootfs.sh, test_import.sh, test_streaming.sh
+### Lo que falta
+- No se ha probado streaming real con gafas Aria (necesita glasses + WiFi)
+- projectaria-tools no compilado nativo ARM64 (para aria-guard)
+- Scripts de setup no reflejan el proceso real (se hizo manual)
 
 ## Siguiente paso inmediato
 
-**Fase 1, Hito 1.1: Probar FEX-Emu + `import aria.sdk`**
+### Opción A: Fase 1.5 — projectaria-tools nativo ARM64
+Compilar projectaria-tools desde source en el Jetson para que aria-guard pueda usar los types nativamente sin emulación. Ver IMPLEMENTATION_PLAN.md Fase 1.5.
 
-No se necesitan las gafas Aria. El test es:
+### Opción B: Fase 2 — Streaming test con gafas Aria
+Necesita:
+1. Gafas Aria encendidas y pareadas
+2. Jetson y gafas en la misma red WiFi
+3. Ejecutar `./scripts/test_streaming.sh`
 
-1. Instalar FEX-Emu en ARM64 (Jetson o cualquier aarch64)
-2. Crear rootfs x86_64 con Python 3.12 + projectaria-client-sdk
-3. Correr `test_import.sh` — si `import aria.sdk` carga `libsdk_core.so` (98 MB) sin crashear, el 80% está resuelto
-
-```bash
-./scripts/setup_fex_emu.sh   # Compilar FEX-Emu
-./scripts/setup_rootfs.sh    # Crear rootfs + instalar SDK
-./scripts/test_import.sh     # EL TEST CLAVE
-```
-
-## Qué puede salir mal
-
-- `libsdk_core.so` usa instrucciones x86_64 que FEX-Emu no traduce bien → crash al import
-- Syscalls raros de FastDDS/Proxygen fallan bajo emulación → crash al inicializar
-- Memory ordering issues (ARM64 es más relajado que x86_64) → races, hangs
-
-## Si falla
-
-- Plan B: Relay proxy con miniPC x86_64 + ZMQ (~100€)
-- Plan C: Reverse-engineering del protocolo Gen2 (HTTP/2 + FlatBuffers)
-- Detalles en [RESEARCH.md](RESEARCH.md)
+### Opción C: Actualizar scripts
+Reescribir `setup_rootfs.sh` para que refleje el proceso que realmente funciona (FEXRootFSFetcher + pip con --platform + libstdc++ update). Ver DEVELOPER_DIARY.md Exp 001 para los pasos exactos.
 
 ## Decisiones pendientes
-
-- Mecanismo IPC para el bridge (ZMQ vs shared memory) — decidir después de que Fase 1 funcione
-- Gen1 vs Gen2 streaming — Gen2 (HTTP/2) es más simple de emular que Gen1 (DDS/RTPS)
+- Python 3.10 vs 3.12: el rootfs usa 3.10 (viene con Ubuntu 22.04). Funciona con el SDK. ¿Vale la pena instalar 3.12 dentro del rootfs o nos quedamos con 3.10 para el bridge?
+- Mecanismo IPC para el bridge (ZMQ vs shared memory) — decidir en Fase 3

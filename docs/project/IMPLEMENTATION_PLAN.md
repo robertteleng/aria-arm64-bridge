@@ -14,33 +14,34 @@ Documentación, investigación, setup del entorno.
 - [x] Evaluar alternativas (relay proxy, QEMU, Box64, FEX-Emu, reverse-engineering)
 - [x] Decisión: FEX-Emu como approach principal
 - [x] Crear repo y documentación base
-- [ ] Investigar FEX-Emu en Jetson Orin Nano (compatibilidad JetPack 6.x)
+- [x] Investigar FEX-Emu en Jetson Orin Nano (compatibilidad JetPack 6.x)
 
 ---
 
-## Fase 1: FEX-Emu + Aria SDK Import Test
+## Fase 1: FEX-Emu + Aria SDK Import Test ✓ COMPLETADA (2026-02-25)
 
 **Goal:** `import aria.sdk` funciona bajo FEX-Emu en el Jetson.
 
-### Hito 1.1 — FEX-Emu en Jetson
+### Hito 1.1 — FEX-Emu en Jetson ✓
 
-- [ ] Instalar FEX-Emu en Jetson Orin Nano
-- [ ] Crear x86_64 rootfs (Ubuntu 22.04 base)
-- [ ] Verificar que Python 3.12 x86_64 funciona bajo FEX
+- [x] Instalar FEX-Emu en Jetson Orin Nano (compilado desde source, -DBUILD_FEXCONFIG=OFF)
+- [x] Crear x86_64 rootfs (FEXRootFSFetcher, Ubuntu 22.04 SquashFS)
+- [x] Verificar que Python 3.10 x86_64 funciona bajo FEX
 - [ ] Benchmark: overhead de FEX-Emu para operaciones básicas
 
-### Hito 1.2 — Aria SDK bajo emulación
+### Hito 1.2 — Aria SDK bajo emulación ✓
 
-- [ ] Instalar projectaria-client-sdk en rootfs x86_64
-- [ ] `import aria.sdk` sin errores
-- [ ] `import aria.sdk_gen2` sin errores (Gen2 HTTP streaming)
-- [ ] Verificar que libsdk_core.so carga correctamente (dependencias resueltas)
-- [ ] Documentar cualquier syscall que falle
+- [x] Instalar projectaria-client-sdk en rootfs x86_64 (pip --platform manylinux2014_x86_64)
+- [x] `import aria.sdk` sin errores
+- [x] `import aria.sdk_gen2` sin errores (Gen2 HTTP streaming)
+- [x] Verificar que libsdk_core.so carga correctamente (requirió actualizar libstdc++ a gcc-13)
+- [x] Instalar projectaria-tools en rootfs (necesario — aria.sdk importa projectaria_tools.core)
 
-### Hito 1.3 — Validación
+### Hito 1.3 — Validación ✓
 
-- [ ] Script automatizado de verificación: `test_import.sh`
-- [ ] Documentar en DEVELOPER_DIARY.md
+- [x] Verificación manual exitosa de todos los imports
+- [x] Documentar en DEVELOPER_DIARY.md (Exp 001)
+- [ ] Script automatizado de verificación: `test_import.sh` (actualizado pero no ejecutado como script)
 
 ---
 
