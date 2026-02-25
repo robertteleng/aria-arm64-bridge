@@ -1,0 +1,23 @@
+# Auto-generated session context (ephemeral)
+docs/project/NEXT_SESSION.md
+
+# FEX-Emu rootfs (large, download separately)
+rootfs/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Experiment artifacts
+experiments/captures/
+experiments/*.pcap
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
