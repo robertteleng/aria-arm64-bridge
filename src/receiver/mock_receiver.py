@@ -3,9 +3,12 @@
 Simulates the same ZMQ protocol as aria_receiver.py but with synthetic data.
 Does NOT require FEX-Emu or the Aria SDK.
 
-Usage:
+Usage (native):
     python3 src/receiver/mock_receiver.py
     python3 src/receiver/mock_receiver.py --fps 15 --width 640 --height 480
+
+Usage (under FEX-Emu, to test cross-process):
+    PYTHONNOUSERSITE=1 FEXBash -c "python3 src/receiver/mock_receiver.py"
 """
 
 import argparse

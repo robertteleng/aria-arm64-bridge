@@ -4,8 +4,8 @@ Connects to Aria glasses via the SDK, receives frames, and pushes
 them over ZMQ to the native ARM64 consumer.
 
 Usage:
-    FEXBash -c "python3 src/receiver/aria_receiver.py --interface usb"
-    FEXBash -c "python3 src/receiver/aria_receiver.py --interface wifi --device-ip 192.168.1.42"
+    PYTHONNOUSERSITE=1 FEXBash -c "python3 src/receiver/aria_receiver.py --interface usb"
+    PYTHONNOUSERSITE=1 FEXBash -c "python3 src/receiver/aria_receiver.py --interface wifi --device-ip 192.168.1.42"
 """
 
 import argparse

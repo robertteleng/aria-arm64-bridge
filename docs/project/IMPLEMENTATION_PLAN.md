@@ -105,6 +105,7 @@ Documentación, investigación, setup del entorno.
 - [x] Test unitario: `tests/test_zmq_pipeline.py` — PASS
 - [x] Benchmark mock: 30 FPS @ 320x240 con ~6ms latencia
 - [x] Benchmark throughput: **>1000 FPS** con frames de 5.9MB (ZMQ no es bottleneck)
+- [x] Test cross-process: FEX-Emu mock → native consumer: ~24ms latencia, 0 errores
 - [ ] Benchmark con receiver real bajo FEX-Emu (necesita gafas → Fase 2 primero)
 
 ### Hito 3.2 — Robustez
