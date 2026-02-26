@@ -116,15 +116,19 @@ Documentación, investigación, setup del entorno.
 
 ---
 
-## Fase 4: Integration con aria-guard
+## Fase 4: Integration con aria-guard (parcialmente avanzada)
 
 **Goal:** aria-guard funciona en Jetson con Aria glasses via el bridge.
 
-### Hito 4.1 — Integración
+### Hito 4.1 — Integración (código listo, falta test con gafas)
 
-- [ ] Nuevo source type en aria-guard: `aria-fex` o `aria-bridge`
-- [ ] AriaProcess de aria-guard usa el bridge en lugar del SDK directo
-- [ ] Pipeline completo: Aria → FEX → bridge → YOLO → alerts
+- [x] Nuevo source type: `aria:bridge` en `run.py` (opción [5]) y `main.py`
+- [x] `AriaBridgeObserver`: drop-in replacement para `AriaDemoObserver`
+  - Misma interfaz: `get_frame()`, `get_stats()`, `stop()`
+  - Mismas transformaciones: rotate 90° CW, RGB→BGR
+  - `fov_h = 1.919` (110° Aria RGB)
+- [x] Test con mock pipeline: PASS (BGR validation, multi-camera)
+- [ ] Pipeline completo con gafas: Aria → FEX → ZMQ → YOLO → alerts
 
 ### Hito 4.2 — Producción
 

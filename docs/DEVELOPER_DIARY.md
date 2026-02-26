@@ -354,3 +354,67 @@ OK - projectaria_tools importado correctamente
   - Usar `-j1` desde el principio en Jetson 8GB para evitar reinicios por OOM
   - Instalar todos los `-dev` packages de una vez (FFmpeg, Boost, Opus)
   - Compilar directamente con `-DBUILD_PYTHON_BINDINGS=ON` en vez de separar C++ y pip install
+
+---
+
+## Exp 003: ZMQ Bridge + Integración con aria-guard
+**Fecha:** 2026-02-26
+**Branch:** `main`
+**Estado:** Éxito (pipeline mock validado, integración lista)
+
+---
+
+### Hipótesis
+> "Si creamos un bridge ZMQ entre FEX-Emu (receiver) y ARM64 nativo (consumer), podemos integrar Aria con aria-guard sin modificar el pipeline de detección."
+
+### Setup
+- Protocolo v2: header 28B (magic + camera_id + timestamp + dimensions) + raw pixels
+- ZMQ PUSH/PULL sobre tcp://127.0.0.1:5555
+- `aria_receiver.py` corre bajo FEX-Emu, `AriaBridgeObserver` corre nativo
+
+### Ejecución
+
+#### Pipeline ZMQ
+- Mock nativo 320x240 @ 30 FPS: **~6ms latencia**, 29.9 FPS reales
+- Throughput ZMQ puro: **>1000 FPS** para frames de 5.9MB (no es cuello de botella)
+- Cross-process FEX-Emu → nativo: **~24ms latencia**, 0 errores de protocolo
+- numpy bajo FEX-Emu es lento para generar frames, pero el SDK real solo pasa buffers
+
+#### Integración aria-guard
+- `AriaBridgeObserver` implementa misma interfaz que `AriaDemoObserver`:
+  - `get_frame("rgb")` → BGR uint8 (rotado 90° CW, RGB→BGR)
+  - `get_frame("eye")` → BGR uint8 (rotado 180°, gray→BGR)
+  - `get_stats()` → dict con fps por cámara
+  - `fov_h = 1.919` (110° Aria RGB)
+- Integrado en `aria-guard/run.py` como opción [5] "Aria Bridge"
+- Integrado en `aria-guard/src/web/main.py` como source `aria:bridge`
+
+#### Obstáculo: PYTHONNOUSERSITE
+- FEX-Emu Python 3.10 carga numpy ARM64 de `~/.local/` en vez del x86_64 del rootfs
+- **Solución:** `PYTHONNOUSERSITE=1` al lanzar bajo FEX-Emu
+
+### Resultado
+- Pipeline mock: PASS
+- Observer test: PASS (RGB→BGR, stats, multi-camera)
+- aria-guard integrado: `python3 run.py aria:bridge`
+
+### Análisis
+- ZMQ es más que suficiente para 30 FPS con frames grandes
+- La barrera FEX-Emu ↔ nativo no introduce problemas — ZMQ usa TCP loopback
+- El bridge añade ~24ms al frame delivery (FEX-Emu overhead + ZMQ)
+- Con frames reales del SDK (buffer directo, sin numpy), la latencia será menor
+
+### Decisión
+- [x] Bridge ZMQ funcional
+- [x] aria-guard integrado
+- [ ] Probar con gafas reales (Fase 2)
+
+### Reflexión
+- **Lo que aprendí:**
+  - ZMQ PUSH/PULL es trivial de implementar y performante
+  - El protocolo binario simple (header + raw bytes) es mejor que serializar con pickle/protobuf
+  - `PYTHONNOUSERSITE=1` es necesario para evitar conflictos ARM64/x86_64 en packages de usuario
+  - aria-guard ya tenía la abstracción perfecta (`BaseObserver`) — solo añadir un observer nuevo
+- **Lo que haría diferente:**
+  - Incluir camera_id en el protocolo desde el principio (no como v2)
+  - Testear cross-process FEX-Emu antes de escribir el observer
