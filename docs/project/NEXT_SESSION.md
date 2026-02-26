@@ -2,93 +2,98 @@
 
 ## Estado actual (2026-02-26)
 
-**Fase 1 ✓** — `import aria.sdk` funciona bajo FEX-Emu en Jetson
-**Fase 1.5 ✓** — `projectaria_tools` compilado nativo ARM64 con Python 3.12 bindings
-**Fase 3 (parcial) ✓** — ZMQ bridge funcional: mock → consumer a 30 FPS, ~24ms cross-process
-**Fase 4 (parcial) ✓** — aria-guard integrado: `AriaBridgeObserver` + source `aria:bridge`
+**Todo el pipeline funciona end-to-end:**
+- Aria glasses → FEX-Emu receiver → ZMQ → Docker aria-guard (YOLO TRT + Depth TRT)
+- 8-11 FPS RGB, 14 FPS detector, 43ms latency
+- Detecta personas con distancia (medium/far)
+- Librería empaquetada: `aria-arm64-bridge v0.1.0`
 
-### Lo que funciona sin gafas
-- `import aria.sdk`, `import aria.sdk_gen2` bajo FEX-Emu ✓
-- `from projectaria_tools.core.sensor_data import ImageDataRecord` nativo ARM64 ✓
-- ZMQ pipeline: `mock_receiver.py` → `frame_consumer.py` ✓ (>1000 FPS throughput)
-- FEX-Emu → nativo cross-process ✓ (~24ms latencia)
-- `AriaBridgeObserver` → BGR validation ✓
-- aria-guard con source `aria:bridge` → menú option [5] ✓
-
----
-
-## Siguiente paso inmediato: Fase 2 — Streaming real
-
-### Preparación (5 min)
-
-1. Gafas Aria encendidas + Mobile Companion App abierta en el móvil
-2. Cable USB-C entre gafas y Jetson
-3. Jetson y gafas en la misma red WiFi (para WiFi streaming)
-
-### Paso 1: Auth pair (una sola vez)
-
-```bash
-# IMPORTANTE: PYTHONNOUSERSITE=1 evita que numpy ARM64 contamine el proceso
-PYTHONNOUSERSITE=1 FEXBash -c "aria auth pair"
-```
-
-- Aprobar en la Mobile Companion App cuando aparezca el prompt
-- Los certificados persisten hasta factory reset
-
-### Paso 2: Diagnóstico
-
-```bash
-PYTHONNOUSERSITE=1 FEXBash -c "aria-doctor"
-```
-
-### Paso 3: Test streaming básico (USB)
-
-```bash
-# Verificar que llegan frames con el device_stream oficial
-PYTHONNOUSERSITE=1 FEXBash -c "python3 -m device_stream --interface usb --update_iptables"
-```
-
-### Paso 4: Test con aria_receiver.py (nuestro código)
-
-```bash
-# Terminal 1: Receptor bajo FEX-Emu → envía por ZMQ
-cd ~/Projects/aria-arm64-bridge
-PYTHONNOUSERSITE=1 FEXBash -c "python3 src/receiver/aria_receiver.py --interface usb"
-
-# Terminal 2: Consumer nativo → verifica que llegan frames
-python3.12 src/bridge/frame_consumer.py
-```
-
-### Paso 5: Pipeline completo con aria-guard
-
-```bash
-# Terminal 1: aria_receiver.py bajo FEX-Emu (sigue corriendo)
-cd ~/Projects/aria-arm64-bridge
-PYTHONNOUSERSITE=1 FEXBash -c "python3 src/receiver/aria_receiver.py --interface usb"
-
-# Terminal 2: aria-guard con source bridge
-cd ~/Projects/aria-guard
-python3 run.py
-# → Seleccionar opción [5] "Aria Bridge (Jetson ARM64 via ZMQ)"
-```
+### Fases completadas
+- Phase 1 ✓ — `import aria.sdk` bajo FEX-Emu
+- Phase 1.5 ✓ — `projectaria_tools` compilado ARM64 nativo
+- Phase 2 ✓ — Streaming real: profile12 @ 11 FPS RGB (1408x1408)
+- Phase 3 ✓ — ZMQ bridge funcional (~24ms latency)
+- Phase 4 ✓ — aria-guard integrado con YOLO TRT + Depth TRT
+- Library ✓ — `from aria_arm64_bridge import AriaBridge` empaquetado y publicado en GitHub
 
 ---
 
-## Qué validar en Fase 2
+## Pendientes para próxima sesión
 
-- [ ] `aria auth pair` completa sin errores bajo FEX-Emu
-- [ ] Confirmar ruta de certificados (`~/.aria/` o dentro del rootfs)
-- [ ] `aria-doctor` pasa todas las verificaciones
-- [ ] `device_stream` recibe frames por USB
-- [ ] `aria_receiver.py` envía frames por ZMQ correctamente
-- [ ] `frame_consumer.py` recibe y decodifica frames reales
-- [ ] Pipeline completo: Aria → FEX-Emu → ZMQ → aria-guard → YOLO
-- [ ] Medir latencia end-to-end (target: <50ms overhead de emulación)
-- [ ] Sostener 30 FPS por >60 segundos sin crashes
+### 1. Headless setup (liberar 3+ GB RAM)
+```bash
+# Desactivar escritorio
+sudo systemctl set-default multi-user.target && sudo reboot
+# Volver al escritorio:
+sudo systemctl set-default graphical.target && sudo reboot
+```
+- El sistema con desktop usa 5.3/7.4 GB + 2.9 GB swap
+- Headless libera ~3 GB (VSCode, gnome, Xorg, NoMachine)
+- Esperado: receiver sube de 8 a 11 FPS, detector a 20+ FPS
 
-## Notas técnicas
+### 2. NeMo TTS en Docker
+- `aria-demo:jetson` no tiene NeMo instalado
+- Opción A: rebuild Docker image con NeMo
+- Opción B: instalar en runtime (`pip install nemo_toolkit[tts]`) — tarda y usa mucha RAM
+- Audio feedback no funciona en Docker (no tiene dispositivo de sonido)
+- Necesita `--device /dev/snd` o PulseAudio passthrough
 
-- **PYTHONNOUSERSITE=1** es obligatorio con FEX-Emu para evitar que numpy ARM64 de `~/.local/` contamine el proceso x86_64
-- Perfiles: `profile18` (WiFi), `profile28` (USB) — `aria_receiver.py` auto-selecciona
-- Si OOM: cerrar otros procesos. El Jetson tiene 8GB compartidos CPU+GPU
-- ZMQ endpoint por defecto: `tcp://127.0.0.1:5555`
+### 3. Publicar en PyPI
+```bash
+pip install build twine
+python -m build
+twine upload dist/*
+```
+- Verificar que `pip install aria-arm64-bridge` funciona limpio
+- Necesita cuenta PyPI
+
+### 4. Gaze engine — recompilar TRT
+- `gaze.engine` falla (compilado en otra plataforma)
+- No hay ONNX source — buscar cómo exportar el modelo de gaze
+- Sin esto, `gaze: null` en la detección
+
+### 5. WiFi streaming
+- No probado aún (solo USB testado)
+- Necesita router WiFi 6, 5 GHz, sin AP isolation
+- Comando: `AriaBridge(interface="wifi", device_ip="192.168.1.X")`
+
+### 6. Optimizaciones opcionales
+- profile12 + SLAM + IMU combinado (no probado)
+- Reducir resolución si 11 FPS no es suficiente
+- Evaluar si gen2 Aria hardware da más FPS con HTTP streaming
+
+---
+
+## Cómo lanzar la pipeline
+
+### Opción A: Script (2 terminales en 1)
+```bash
+./scripts/launch_pipeline.sh              # USB
+./scripts/launch_pipeline.sh wifi 192.168.1.42  # WiFi
+```
+
+### Opción B: Manual (2 terminales)
+```bash
+# Terminal 1: Receiver
+PYTHONNOUSERSITE=1 FEXBash -c "python3 src/receiver/aria_receiver.py"
+
+# Terminal 2: aria-guard en Docker
+docker run --runtime nvidia --network host -it --rm \
+  -v ~/Projects/aria-arm64-bridge/src/bridge:/bridge \
+  -v ~/Projects/aria-guard:/app \
+  aria-demo:jetson bash -c "pip3 install pyzmq 'numpy<2' --force-reinstall && PYTHONPATH=/bridge python3 run.py aria:bridge"
+```
+
+Dashboard: http://<jetson-ip>:5000
+
+---
+
+## Gotchas importantes
+
+- `numpy<2` obligatorio en Docker (OpenCV ABI mismatch)
+- `PYTHONNOUSERSITE=1` obligatorio bajo FEX-Emu
+- `profile12` es el único perfil viable (~11 FPS)
+- NUNCA subscribirse a audio (crash `free(): invalid size`)
+- TRT engines deben compilarse EN el Orin Nano
+- Daemon threads crashean silenciosamente — siempre try/except
+- trtexec path en Docker: `/usr/src/tensorrt/targets/aarch64-linux-gnu/bin/trtexec`
