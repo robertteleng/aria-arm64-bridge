@@ -1,6 +1,6 @@
 """Mock frame receiver — generates fake frames for testing without Aria glasses.
 
-Simulates the same ZMQ protocol as aria_receiver.py but with synthetic data.
+Simulates the same ZMQ protocol (v2) as aria_receiver.py but with synthetic data.
 Does NOT require FEX-Emu or the Aria SDK.
 
 Usage (native):
@@ -20,6 +20,11 @@ import numpy as np
 import zmq
 
 DEFAULT_ZMQ_ENDPOINT = "tcp://127.0.0.1:5555"
+
+# Protocol v2 constants (must match aria_receiver.py)
+HEADER_FORMAT = "<4sB3xQIII"
+HEADER_MAGIC = b"ARI2"
+CAM_RGB = 0
 
 
 def run(zmq_endpoint, fps, width, height):
@@ -59,7 +64,8 @@ def run(zmq_endpoint, fps, width, height):
         b = np.full((height, width), phase, dtype=np.float32)
         frame = (np.stack([r, g, b], axis=2) * 255).astype(np.uint8)
 
-        header = struct.pack("<4sQIII", b"ARIA", timestamp_ns, width, height, channels)
+        header = struct.pack(HEADER_FORMAT, HEADER_MAGIC, CAM_RGB, timestamp_ns,
+                             width, height, channels)
 
         try:
             socket.send(header + frame.tobytes(), zmq.NOBLOCK)

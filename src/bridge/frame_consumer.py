@@ -18,23 +18,32 @@ import numpy as np
 import zmq
 
 DEFAULT_ZMQ_ENDPOINT = "tcp://127.0.0.1:5555"
-HEADER_SIZE = 24  # magic(4) + timestamp_ns(8) + width(4) + height(4) + channels(4)
-HEADER_MAGIC = b"ARIA"
+
+# Protocol v2 constants (must match aria_receiver.py)
+HEADER_FORMAT = "<4sB3xQIII"
+HEADER_SIZE = 28
+HEADER_MAGIC = b"ARI2"
+
+# Camera ID mapping
+CAM_NAMES = {0: "rgb", 1: "eye", 2: "slam1", 3: "slam2"}
 
 
 def parse_frame(data):
     """Parse a frame message from the receiver.
 
-    Returns (timestamp_ns, frame) where frame is a numpy array (H, W, C).
+    Returns (camera_name, timestamp_ns, frame) where frame is a numpy array (H, W, C).
     Raises ValueError on invalid data.
     """
     if len(data) < HEADER_SIZE:
         raise ValueError(f"Message too short: {len(data)} bytes")
 
-    magic, timestamp_ns, width, height, channels = struct.unpack("<4sQIII", data[:HEADER_SIZE])
+    magic, cam_id, timestamp_ns, width, height, channels = struct.unpack(
+        HEADER_FORMAT, data[:HEADER_SIZE])
 
     if magic != HEADER_MAGIC:
         raise ValueError(f"Bad magic: {magic!r}")
+
+    cam_name = CAM_NAMES.get(cam_id, f"unknown_{cam_id}")
 
     expected_size = HEADER_SIZE + width * height * channels
     if len(data) != expected_size:
@@ -43,11 +52,11 @@ def parse_frame(data):
     frame = np.frombuffer(data, dtype=np.uint8, offset=HEADER_SIZE)
     frame = frame.reshape((height, width, channels)) if channels > 1 else frame.reshape((height, width))
 
-    return timestamp_ns, frame
+    return cam_name, timestamp_ns, frame
 
 
 def run(zmq_endpoint, callback=None):
-    """Main consumer loop. Calls callback(timestamp_ns, frame) for each frame.
+    """Main consumer loop. Calls callback(cam_name, timestamp_ns, frame) for each frame.
 
     If callback is None, just prints stats.
     """
@@ -56,7 +65,7 @@ def run(zmq_endpoint, callback=None):
     socket.connect(zmq_endpoint)
     print(f"[consumer] Connected to {zmq_endpoint}")
 
-    frame_count = 0
+    frame_counts = {}
     start_time = time.monotonic()
     latencies = []
 
@@ -83,7 +92,7 @@ def run(zmq_endpoint, callback=None):
         recv_time_ns = int(time.monotonic() * 1e9)
 
         try:
-            timestamp_ns, frame = parse_frame(data)
+            cam_name, timestamp_ns, frame = parse_frame(data)
         except ValueError as e:
             print(f"[consumer] Bad frame: {e}", file=sys.stderr)
             continue
@@ -91,24 +100,28 @@ def run(zmq_endpoint, callback=None):
         latency_ms = (recv_time_ns - timestamp_ns) / 1e6
         latencies.append(latency_ms)
 
-        if callback:
-            callback(timestamp_ns, frame)
+        frame_counts[cam_name] = frame_counts.get(cam_name, 0) + 1
 
-        frame_count += 1
-        if frame_count % 30 == 0:
+        if callback:
+            callback(cam_name, timestamp_ns, frame)
+
+        total = sum(frame_counts.values())
+        if total % 30 == 0:
             elapsed = time.monotonic() - start_time
-            fps = frame_count / elapsed if elapsed > 0 else 0
+            fps = total / elapsed if elapsed > 0 else 0
             avg_latency = sum(latencies[-30:]) / min(len(latencies), 30)
             h, w = frame.shape[:2]
-            print(f"[consumer] frames={frame_count} fps={fps:.1f} "
-                  f"latency={avg_latency:.1f}ms size={w}x{h}")
+            print(f"[consumer] frames={total} fps={fps:.1f} "
+                  f"latency={avg_latency:.1f}ms cams={dict(frame_counts)}")
 
     elapsed = time.monotonic() - start_time
+    total = sum(frame_counts.values())
     print(f"\n[consumer] Summary:")
-    print(f"  Total frames: {frame_count}")
+    print(f"  Total frames: {total}")
+    print(f"  Per camera: {dict(frame_counts)}")
     print(f"  Duration: {elapsed:.1f}s")
-    if frame_count > 0:
-        print(f"  Average FPS: {frame_count / elapsed:.1f}")
+    if total > 0:
+        print(f"  Average FPS: {total / elapsed:.1f}")
     if latencies:
         print(f"  Latency avg={sum(latencies)/len(latencies):.1f}ms "
               f"min={min(latencies):.1f}ms max={max(latencies):.1f}ms")

@@ -6,6 +6,11 @@ them over ZMQ to the native ARM64 consumer.
 Usage:
     PYTHONNOUSERSITE=1 FEXBash -c "python3 src/receiver/aria_receiver.py --interface usb"
     PYTHONNOUSERSITE=1 FEXBash -c "python3 src/receiver/aria_receiver.py --interface wifi --device-ip 192.168.1.42"
+
+Protocol (v2):
+    Header: magic(4) + camera_id(1) + pad(3) + timestamp_ns(8) + width(4) + height(4) + channels(4)
+    Total header: 28 bytes, followed by raw pixel data (uint8)
+    Camera IDs: 0=rgb, 1=eye, 2=slam1, 3=slam2
 """
 
 import argparse
@@ -21,12 +26,23 @@ try:
     import aria.sdk as aria
 except ImportError:
     print("ERROR: aria.sdk not found. Run this under FEX-Emu.", file=sys.stderr)
-    print("  FEXBash -c \"python3 src/receiver/aria_receiver.py\"", file=sys.stderr)
+    print("  PYTHONNOUSERSITE=1 FEXBash -c \"python3 src/receiver/aria_receiver.py\"", file=sys.stderr)
     sys.exit(1)
 
 DEFAULT_ZMQ_ENDPOINT = "tcp://127.0.0.1:5555"
 PROFILE_WIFI = "profile18"
 PROFILE_USB = "profile28"
+
+# Header format: magic(4s) + camera_id(B) + pad(3x) + timestamp(Q) + w(I) + h(I) + ch(I)
+HEADER_FORMAT = "<4sB3xQIII"
+HEADER_SIZE = 28
+HEADER_MAGIC = b"ARI2"
+
+# Camera ID mapping
+CAM_RGB = 0
+CAM_EYE = 1
+CAM_SLAM1 = 2
+CAM_SLAM2 = 3
 
 
 class AriaFrameObserver(aria.BaseStreamingClientObserver):
@@ -35,26 +51,39 @@ class AriaFrameObserver(aria.BaseStreamingClientObserver):
     def __init__(self, zmq_socket):
         super().__init__()
         self._socket = zmq_socket
-        self._frame_count = 0
+        self._frame_counts = {"rgb": 0, "eye": 0, "slam1": 0, "slam2": 0}
         self._start_time = time.monotonic()
 
-    def on_image_received(self, image, record):
-        timestamp_ns = record.capture_timestamp_ns
-        width = image.shape[1] if len(image.shape) >= 2 else 0
-        height = image.shape[0] if len(image.shape) >= 2 else 0
-
-        # Header: magic(4) + timestamp_ns(8) + width(4) + height(4) + channels(4)
+    def _send_frame(self, cam_id, cam_name, image, timestamp_ns):
+        height, width = image.shape[:2]
         channels = image.shape[2] if len(image.shape) == 3 else 1
-        header = struct.pack("<4sQIII", b"ARIA", timestamp_ns, width, height, channels)
+        header = struct.pack(HEADER_FORMAT, HEADER_MAGIC, cam_id, timestamp_ns,
+                             width, height, channels)
+        try:
+            self._socket.send(header + image.tobytes(), zmq.NOBLOCK)
+        except zmq.Again:
+            return  # consumer too slow, drop frame
 
-        self._socket.send(header + image.tobytes(), zmq.NOBLOCK)
-
-        self._frame_count += 1
-        if self._frame_count % 30 == 0:
+        self._frame_counts[cam_name] += 1
+        total = sum(self._frame_counts.values())
+        if total % 90 == 0:
             elapsed = time.monotonic() - self._start_time
-            fps = self._frame_count / elapsed if elapsed > 0 else 0
-            print(f"[receiver] frames={self._frame_count} fps={fps:.1f} "
-                  f"size={width}x{height}x{channels}")
+            fps = {k: v / elapsed for k, v in self._frame_counts.items() if v > 0}
+            fps_str = " ".join(f"{k}={v:.0f}" for k, v in fps.items())
+            print(f"[receiver] {fps_str} fps (total={total})")
+
+    def on_image_received(self, image, record):
+        camera_id = record.camera_id
+        timestamp_ns = record.capture_timestamp_ns
+
+        if camera_id == aria.CameraId.Rgb:
+            self._send_frame(CAM_RGB, "rgb", image, timestamp_ns)
+        elif camera_id == aria.CameraId.EyeTrack:
+            self._send_frame(CAM_EYE, "eye", image, timestamp_ns)
+        elif camera_id == aria.CameraId.Slam1:
+            self._send_frame(CAM_SLAM1, "slam1", image, timestamp_ns)
+        elif camera_id == aria.CameraId.Slam2:
+            self._send_frame(CAM_SLAM2, "slam2", image, timestamp_ns)
 
 
 def run(interface, device_ip, zmq_endpoint, profile):
@@ -70,13 +99,22 @@ def run(interface, device_ip, zmq_endpoint, profile):
     if interface == "usb":
         device = device_client.connect()
     else:
-        device = device_client.connect(device_ip)
+        client_config = aria.DeviceClientConfig()
+        client_config.ip_v4_address = device_ip
+        device_client.set_client_config(client_config)
+        device = device_client.connect()
 
     streaming_manager = device.streaming_manager
-    config = streaming_manager.streaming_config
+
+    config = aria.StreamingConfig()
     resolved_profile = profile or (PROFILE_USB if interface == "usb" else PROFILE_WIFI)
     config.profile_name = resolved_profile
-    config.use_ephemeral_certs = True
+    if interface == "wifi":
+        config.streaming_interface = aria.StreamingInterface.WifiStation
+    else:
+        config.streaming_interface = aria.StreamingInterface.Usb
+    config.security_options.use_ephemeral_certs = True
+    streaming_manager.streaming_config = config
 
     print(f"[receiver] Starting streaming (profile={resolved_profile})...")
     streaming_manager.start_streaming()

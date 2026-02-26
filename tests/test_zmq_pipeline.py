@@ -17,6 +17,12 @@ ZMQ_ENDPOINT = "tcp://127.0.0.1:5556"  # different port to avoid conflicts
 NUM_FRAMES = 10
 WIDTH, HEIGHT, CHANNELS = 320, 240, 3
 
+# Protocol v2 constants
+HEADER_FORMAT = "<4sB3xQIII"
+HEADER_SIZE = 28
+HEADER_MAGIC = b"ARI2"
+CAM_RGB = 0
+
 
 def sender_thread(endpoint, num_frames):
     """Simulates mock_receiver: sends frames over ZMQ."""
@@ -28,7 +34,8 @@ def sender_thread(endpoint, num_frames):
     for i in range(num_frames):
         timestamp_ns = int(time.monotonic() * 1e9)
         frame = np.full((HEIGHT, WIDTH, CHANNELS), i % 256, dtype=np.uint8)
-        header = struct.pack("<4sQIII", b"ARIA", timestamp_ns, WIDTH, HEIGHT, CHANNELS)
+        header = struct.pack(HEADER_FORMAT, HEADER_MAGIC, CAM_RGB, timestamp_ns,
+                             WIDTH, HEIGHT, CHANNELS)
         socket.send(header + frame.tobytes())
         time.sleep(0.01)
 
@@ -60,22 +67,24 @@ def test_pipeline():
         data = socket.recv()
 
         # Verify header
-        if len(data) < 24:
+        if len(data) < HEADER_SIZE:
             errors.append(f"Frame {received}: too short ({len(data)} bytes)")
             continue
 
-        magic, ts_ns, w, h, ch = struct.unpack("<4sQIII", data[:24])
+        magic, cam_id, ts_ns, w, h, ch = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
 
-        if magic != b"ARIA":
+        if magic != HEADER_MAGIC:
             errors.append(f"Frame {received}: bad magic {magic!r}")
+        if cam_id != CAM_RGB:
+            errors.append(f"Frame {received}: wrong cam_id {cam_id}")
         if w != WIDTH or h != HEIGHT or ch != CHANNELS:
             errors.append(f"Frame {received}: wrong dimensions {w}x{h}x{ch}")
 
-        expected_size = 24 + WIDTH * HEIGHT * CHANNELS
+        expected_size = HEADER_SIZE + WIDTH * HEIGHT * CHANNELS
         if len(data) != expected_size:
             errors.append(f"Frame {received}: size mismatch {len(data)} vs {expected_size}")
         else:
-            frame = np.frombuffer(data, dtype=np.uint8, offset=24).reshape((HEIGHT, WIDTH, CHANNELS))
+            frame = np.frombuffer(data, dtype=np.uint8, offset=HEADER_SIZE).reshape((HEIGHT, WIDTH, CHANNELS))
             expected_val = received % 256
             if not np.all(frame == expected_val):
                 errors.append(f"Frame {received}: pixel mismatch")
