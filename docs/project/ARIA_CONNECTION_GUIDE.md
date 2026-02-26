@@ -213,10 +213,13 @@ El streaming final para aria-guard usa la arquitectura de bridge:
 
 ## Perfiles de streaming disponibles
 
-| Perfil | Descripción |
-|--------|-------------|
-| `profile18` | Perfil por defecto — RGB + SLAM cams + IMU |
-| (otros) | Consultar doc oficial para lista completa |
+| Perfil | Interfaz | Descripción |
+|--------|----------|-------------|
+| `profile18` | WiFi | RGB + SLAM cams + IMU (usado en aria-guard vía WiFi) |
+| `profile28` | USB | RGB + SLAM cams + IMU (usado en aria-guard vía USB) |
+| (otros) | — | Consultar doc oficial para lista completa |
+
+> **Nota:** El receiver (`aria_receiver.py`) selecciona automáticamente profile28 para USB y profile18 para WiFi.
 
 > **TODO:** Completar tabla de perfiles después de probar con las gafas reales.
 
