@@ -225,7 +225,7 @@ El streaming final para aria-guard usa la arquitectura de bridge:
 
 ---
 
-## Checklist pre-Phase 2
+## Checklist Phase 2
 
 - [ ] Ejecutar `aria-doctor` bajo FEX-Emu
 - [ ] Hacer pairing por USB con `aria auth pair`
@@ -233,4 +233,9 @@ El streaming final para aria-guard usa la arquitectura de bridge:
 - [ ] Probar streaming USB básico (`device_stream --interface usb`)
 - [ ] Probar streaming WiFi (`device_stream --interface wifi`)
 - [ ] Medir latencia del stream bajo FEX-Emu
-- [ ] Escribir `src/receiver/aria_receiver.py` que envía frames por ZMQ
+- [x] `src/receiver/aria_receiver.py` implementado (envía frames por ZMQ, protocol v2)
+- [x] `src/bridge/frame_consumer.py` implementado (consumer nativo ARM64)
+- [x] `src/bridge/aria_bridge_observer.py` implementado (drop-in para aria-guard)
+- [ ] Test pipeline completo: Aria → FEX-Emu → ZMQ → aria-guard
+
+> **Importante:** Usar siempre `PYTHONNOUSERSITE=1` al ejecutar bajo FEX-Emu.
