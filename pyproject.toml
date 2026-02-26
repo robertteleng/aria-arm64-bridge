@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aria-arm64-bridge"
+version = "0.1.0"
+description = "Run Meta Aria glasses on ARM64 (Jetson) via FEX-Emu binary translation"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Robert Teleng" },
+]
+keywords = ["aria", "meta", "jetson", "arm64", "fex-emu", "streaming", "zmq"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video :: Capture",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "pyzmq>=25.0",
+    "numpy>=1.24",
+]
+
+[project.urls]
+Repository = "https://github.com/robertteleng/aria-arm64-bridge"
+Documentation = "https://github.com/robertteleng/aria-arm64-bridge#readme"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aria_arm64_bridge"]

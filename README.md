@@ -1,101 +1,142 @@
 # aria-arm64-bridge
 
-## Problem
+**Run Meta Aria glasses on ARM64 (Jetson) — no x86 machine required.**
 
-Meta's Project Aria glasses SDK (`projectaria-client-sdk`) only ships x86_64 Linux binaries. There are no ARM64 wheels, no source distribution, and no way to recompile — it's a 98 MB closed-source monolith with Meta's entire networking stack (FastDDS, Proxygen, QUIC, Folly) statically linked inside.
+Meta's Aria SDK only ships x86_64 binaries. This library uses [FEX-Emu](https://fex-emu.com) binary translation to run the SDK on ARM64, exposing frames through a simple Python API.
 
-This blocks running ARIA Guard directly on Jetson Orin Nano (ARM64), forcing a two-machine setup.
+```python
+from aria_arm64_bridge import AriaBridge
 
-## Solution
-
-Use **FEX-Emu** (x86_64 → ARM64 binary translator with JIT) to run *only* the Aria SDK receiver process under emulation. Since the Aria process is pure I/O (receive frames via WiFi, push to queue), the emulation overhead is negligible — the bottleneck is WiFi, not CPU.
-
-```
-┌─────────────┐    WiFi     ┌────────────────────────────────────────┐
-│ Aria Glasses │ ─────────> │  Jetson Orin Nano (ARM64)              │
-│              │            │                                        │
-└─────────────┘            │  ┌──────────────────────┐              │
-                           │  │ FEX-Emu (x86_64 JIT) │   IPC       │
-                           │  │ Python x86_64         │ ─────────>  │
-                           │  │ aria-client-sdk       │  ZMQ/SHM   │
-                           │  └──────────────────────┘              │
-                           │                              │         │
-                           │  ┌──────────────────────┐    │         │
-                           │  │ Native ARM64          │ <─┘         │
-                           │  │ YOLO + Depth + CUDA   │             │
-                           │  │ (aria-guard pipeline)  │             │
-                           │  └──────────────────────┘              │
-                           └────────────────────────────────────────┘
+with AriaBridge(interface="usb") as bridge:
+    while bridge.is_running:
+        frame = bridge.get_frame("rgb")  # numpy BGR, 1408x1408
+        if frame is not None:
+            your_model(frame)
 ```
 
-### Key Components
+## Performance
 
-| Component | Responsibility |
-|-----------|---------------|
-| FEX-Emu | Translate x86_64 instructions to ARM64 via JIT |
-| x86_64 rootfs | Minimal filesystem with Python + Aria SDK |
-| Aria receiver | Emulated process that receives frames from glasses |
-| IPC bridge | ZMQ/shared memory transport between emulated and native |
-| Native consumer | ARM64 process that feeds frames to aria-guard |
+Tested on Jetson Orin Nano (8 GB, JetPack 6.x):
 
-## Tech Stack
+| Metric | Value |
+|--------|-------|
+| RGB FPS | ~11 (profile12, streaming-optimised) |
+| Resolution | 1408 x 1408 x 3 |
+| Bridge latency | ~24 ms |
+| SLAM FPS | ~49 (2 cameras @ 640x480) |
 
-- **Platform:** Jetson Orin Nano (JetPack 6.x, ARM64)
-- **Emulator:** FEX-Emu (JIT x86_64 binary translation)
-- **Language:** Python 3.12, Bash
-- **IPC:** ZMQ (or shared memory)
+## How it works
 
-## Getting Started
+```
+┌─────────────┐  USB/WiFi  ┌──────────────────────────────────────┐
+│ Aria Glasses │ ─────────> │ Jetson Orin Nano (ARM64)              │
+└─────────────┘            │                                       │
+                           │  FEX-Emu (x86_64)    Native ARM64     │
+                           │  ┌──────────────┐   ┌──────────────┐  │
+                           │  │ Aria SDK      │──>│ Your code    │  │
+                           │  │ receiver.py   │ZMQ│ YOLO, depth  │  │
+                           │  └──────────────┘   │ whatever you  │  │
+                           │                     │ want          │  │
+                           │                     └──────────────┘  │
+                           └──────────────────────────────────────┘
+```
+
+The Aria SDK runs under FEX-Emu (x86_64 binary translation). It receives frames and pushes them over ZMQ to your native ARM64 code. The emulation overhead is negligible — the bottleneck is the SDK's DDS protocol, not the CPU.
+
+## Install
+
+```bash
+pip install aria-arm64-bridge
+```
 
 ### Prerequisites
 
-- Jetson Orin Nano with JetPack 6.x
-- Meta Aria glasses (Gen1 or Gen2)
-- Internet connection (for downloading rootfs and SDK)
+1. **Jetson** (Orin Nano/NX/AGX) with JetPack 6.x
+2. **FEX-Emu** with x86_64 rootfs + `projectaria-client-sdk` installed
+3. **Aria glasses** paired via `aria auth pair`
 
-### Setup
-
-```bash
-# 1. Install FEX-Emu on Jetson
-./scripts/setup_fex_emu.sh
-
-# 2. Create x86_64 rootfs with Python + Aria SDK
-./scripts/setup_rootfs.sh
-
-# 3. Verify installation
-./scripts/test_import.sh
-```
-
-### Test Streaming
+Setup scripts are included:
 
 ```bash
-# Requires Aria glasses paired and on same network
-./scripts/test_streaming.sh
+./scripts/setup_fex_emu.sh    # Install FEX-Emu
+./scripts/setup_rootfs.sh     # x86_64 rootfs + Aria SDK
 ```
 
-## Project Status
+See [ARIA_CONNECTION_GUIDE.md](docs/project/ARIA_CONNECTION_GUIDE.md) for pairing and streaming setup.
 
-See [IMPLEMENTATION_PLAN.md](docs/project/IMPLEMENTATION_PLAN.md) for the full roadmap.
+## Usage
 
-| Phase | Description | Status |
-|-------|------------|--------|
-| 0 | Foundation (docs, research) | In Progress |
-| 1 | FEX-Emu + SDK import test | Pending |
-| 2 | Streaming test | Pending |
-| 3 | IPC bridge | Pending |
-| 4 | aria-guard integration | Pending |
+### High-level (recommended)
 
-## Documentation
+```python
+from aria_arm64_bridge import AriaBridge
 
-| Doc | Purpose |
-|-----|---------|
-| [CLAUDE.md](CLAUDE.md) | LLM/AI rules and coding conventions |
-| [PAIR_WORKFLOW.md](docs/teamwork/PAIR_WORKFLOW.md) | Engineer + Claude collaboration protocol |
-| [IMPLEMENTATION_PLAN.md](docs/project/IMPLEMENTATION_PLAN.md) | Detailed roadmap by phase |
-| [RESEARCH.md](docs/project/RESEARCH.md) | SDK internals, FEX-Emu research, alternatives |
+# Launches FEX-Emu receiver automatically
+bridge = AriaBridge(interface="usb")
+bridge.start()
+
+frame = bridge.get_frame("rgb")   # numpy BGR uint8, or None
+stats = bridge.get_stats()        # {"fps": {"rgb": 11.2}, "uptime": ...}
+
+bridge.stop()
+```
+
+Supports context manager:
+
+```python
+with AriaBridge(interface="wifi", device_ip="192.168.1.42") as bridge:
+    frame = bridge.get_frame("rgb")
+```
+
+### Low-level (run receiver separately)
+
+Terminal 1 — FEX-Emu receiver:
+```bash
+PYTHONNOUSERSITE=1 FEXBash -c "python3 -m aria_arm64_bridge.receiver --interface usb"
+```
+
+Terminal 2 — your code:
+```python
+from aria_arm64_bridge import AriaBridgeObserver
+
+observer = AriaBridgeObserver()  # connects to ZMQ localhost:5555
+frame = observer.get_frame("rgb")
+observer.stop()
+```
+
+### Available cameras
+
+| Camera | ID | Resolution | Notes |
+|--------|----|-----------|-------|
+| `"rgb"` | 0 | 1408x1408 | Main camera, ~11 FPS |
+| `"slam1"` | 2 | 640x480 | Grayscale, ~25 FPS |
+| `"slam2"` | 3 | 640x480 | Grayscale, ~25 FPS |
+| `"eye"` | 1 | varies | Eye tracking camera |
+
+## Important notes
+
+- **Use `profile12`** (default) — it's the only streaming-optimised profile that works reliably under FEX-Emu
+- **Never subscribe to audio** — causes `free(): invalid size` crash under emulation
+- **Always use `PYTHONNOUSERSITE=1`** when running under FEX-Emu
+- **11 FPS is the ceiling** for RGB under FEX-Emu with gen1 Aria glasses (DDS protocol limitation, not CPU)
+
+## Project structure
+
+```
+src/aria_arm64_bridge/
+├── __init__.py      # Public API: AriaBridge, Frame, AriaBridgeObserver
+├── bridge.py        # AriaBridge — high-level, manages subprocess + observer
+├── observer.py      # AriaBridgeObserver — ZMQ consumer (native ARM64)
+├── receiver.py      # Aria SDK receiver (runs under FEX-Emu, x86_64)
+└── protocol.py      # Wire protocol constants (header format, camera IDs)
+```
 
 ## Related
 
-- [aria-guard](https://github.com/robertteleng/aria-guard) — The main ARIA Guard project (collision detection for visually impaired)
 - [FEX-Emu](https://github.com/FEX-Emu/FEX) — x86_64 binary translator for ARM64
 - [Project Aria](https://www.projectaria.com/) — Meta's AR research glasses
+- [projectaria-client-sdk](https://pypi.org/project/projectaria-client-sdk/) — Official Aria SDK (x86_64 only)
+
+## License
+
+MIT
