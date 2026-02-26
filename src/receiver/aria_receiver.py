@@ -30,8 +30,11 @@ except ImportError:
     sys.exit(1)
 
 DEFAULT_ZMQ_ENDPOINT = "tcp://127.0.0.1:5555"
-PROFILE_WIFI = "profile18"
-PROFILE_USB = "profile28"
+# profile12 = streaming-optimized, no audio (11 FPS RGB under FEX-Emu)
+# profile18 = streaming-optimized, has audio (9 FPS RGB, audio crashes observer)
+# profile28 = USB default but NOT streaming-optimized (<2 FPS under FEX-Emu)
+PROFILE_WIFI = "profile12"
+PROFILE_USB = "profile12"
 
 # Header format: magic(4s) + camera_id(B) + pad(3x) + timestamp(Q) + w(I) + h(I) + ch(I)
 HEADER_FORMAT = "<4sB3xQIII"
@@ -45,18 +48,28 @@ CAM_SLAM1 = 2
 CAM_SLAM2 = 3
 
 
-class AriaFrameObserver(aria.BaseStreamingClientObserver):
-    """Receives frames from Aria SDK and pushes them over ZMQ."""
+class AriaFrameObserver:
+    """Receives frames from Aria SDK and pushes them over ZMQ.
+
+    Uses plain class (no BaseStreamingClientObserver inheritance) — matches
+    the observer pattern validated in Phase 2 streaming tests.
+    """
 
     def __init__(self, zmq_socket):
-        super().__init__()
         self._socket = zmq_socket
         self._frame_counts = {"rgb": 0, "eye": 0, "slam1": 0, "slam2": 0}
         self._start_time = time.monotonic()
+        self._first_frame = True
 
     def _send_frame(self, cam_id, cam_name, image, timestamp_ns):
         height, width = image.shape[:2]
         channels = image.shape[2] if len(image.shape) == 3 else 1
+
+        if self._first_frame:
+            self._first_frame = False
+            print(f"[receiver] First frame! cam={cam_name} shape={image.shape} "
+                  f"size={len(image.tobytes())} bytes")
+
         header = struct.pack(HEADER_FORMAT, HEADER_MAGIC, cam_id, timestamp_ns,
                              width, height, channels)
         try:
@@ -73,17 +86,21 @@ class AriaFrameObserver(aria.BaseStreamingClientObserver):
             print(f"[receiver] {fps_str} fps (total={total})")
 
     def on_image_received(self, image, record):
-        camera_id = record.camera_id
-        timestamp_ns = record.capture_timestamp_ns
+        cam_str = str(record.camera_id)
+        timestamp_ns = getattr(record, "capture_timestamp_ns", int(time.time() * 1e9))
 
-        if camera_id == aria.CameraId.Rgb:
-            self._send_frame(CAM_RGB, "rgb", image, timestamp_ns)
-        elif camera_id == aria.CameraId.EyeTrack:
-            self._send_frame(CAM_EYE, "eye", image, timestamp_ns)
-        elif camera_id == aria.CameraId.Slam1:
-            self._send_frame(CAM_SLAM1, "slam1", image, timestamp_ns)
-        elif camera_id == aria.CameraId.Slam2:
-            self._send_frame(CAM_SLAM2, "slam2", image, timestamp_ns)
+        # Map camera — with RGB-only subscription we expect only RGB,
+        # but handle others in case subscription changes later
+        cam_id = CAM_RGB
+        cam_name = "rgb"
+        if "Slam1" in cam_str or "slam1" in cam_str.lower():
+            cam_id, cam_name = CAM_SLAM1, "slam1"
+        elif "Slam2" in cam_str or "slam2" in cam_str.lower():
+            cam_id, cam_name = CAM_SLAM2, "slam2"
+        elif "Eye" in cam_str or "eye" in cam_str.lower():
+            cam_id, cam_name = CAM_EYE, "eye"
+
+        self._send_frame(cam_id, cam_name, image, timestamp_ns)
 
 
 def run(interface, device_ip, zmq_endpoint, profile):
@@ -94,15 +111,12 @@ def run(interface, device_ip, zmq_endpoint, profile):
     print(f"[receiver] ZMQ bound to {zmq_endpoint}")
 
     device_client = aria.DeviceClient()
-    print(f"[receiver] Connecting via {interface}...")
-
-    if interface == "usb":
-        device = device_client.connect()
-    else:
-        client_config = aria.DeviceClientConfig()
+    client_config = aria.DeviceClientConfig()
+    if interface == "wifi" and device_ip:
         client_config.ip_v4_address = device_ip
-        device_client.set_client_config(client_config)
-        device = device_client.connect()
+    device_client.set_client_config(client_config)
+    print(f"[receiver] Connecting via {interface}...")
+    device = device_client.connect()
 
     streaming_manager = device.streaming_manager
 
@@ -119,8 +133,15 @@ def run(interface, device_ip, zmq_endpoint, profile):
     print(f"[receiver] Starting streaming (profile={resolved_profile})...")
     streaming_manager.start_streaming()
 
-    observer = AriaFrameObserver(socket)
     streaming_client = streaming_manager.streaming_client
+
+    # Subscribe to RGB only — audio subscription crashes under FEX-Emu (free(): invalid size)
+    sub_config = streaming_client.subscription_config
+    sub_config.subscriber_data_type = aria.StreamingDataType.Rgb
+    sub_config.message_queue_size[aria.StreamingDataType.Rgb] = 10
+    streaming_client.subscription_config = sub_config
+
+    observer = AriaFrameObserver(socket)
     streaming_client.set_streaming_client_observer(observer)
     streaming_client.subscribe()
 
@@ -153,7 +174,7 @@ def main():
     parser.add_argument("--device-ip", help="Aria glasses IP (required for wifi)")
     parser.add_argument("--zmq-endpoint", default=DEFAULT_ZMQ_ENDPOINT)
     parser.add_argument("--profile", default=None,
-                        help="Streaming profile (default: profile28 for USB, profile18 for WiFi)")
+                        help="Streaming profile (default: profile12 — streaming-optimized, ~11 FPS)")
     args = parser.parse_args()
 
     if args.interface == "wifi" and not args.device_ip:

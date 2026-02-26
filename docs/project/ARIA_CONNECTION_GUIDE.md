@@ -55,7 +55,8 @@ El pairing genera certificados de autenticación entre el Jetson y las gafas. So
 4. **Ejecutar el pairing:**
 
 ```bash
-FEXBash -c "aria auth pair"
+# IMPORTANTE: el CLI aria no está en el PATH — usar ruta completa
+PYTHONNOUSERSITE=1 FEXBash -c "/usr/local/lib/python3.10/dist-packages/bin/aria auth pair"
 ```
 
 5. **Aprobar en la app del móvil** — aparecerá un prompt. Verificar que el hash coincide entre la terminal y la app
@@ -63,16 +64,18 @@ FEXBash -c "aria auth pair"
 
 ### Certificados
 
-Los certificados se guardan localmente. Verificar dónde:
+Los certificados se guardan en el **home del host** (no dentro del rootfs FEX-Emu):
 
-```bash
-# Buscar certificados generados por el SDK
-FEXBash -c "find ~/.aria -type f 2>/dev/null || find ~/aria -type f 2>/dev/null"
+```
+~/.aria/tls-client-certs/<SERIAL>/
+├── tls-client.p12
+├── tls-client-key.pem
+└── tls-client.pem
 ```
 
-> **TODO:** Confirmar la ruta exacta de certificados después del primer pairing real. Posiblemente `~/.aria/` o dentro del rootfs en `$ROOTFS/home/robert/.aria/`.
-
-> **Nota sobre FEX-Emu:** Los certificados podrían guardarse en el rootfs (`~/.fex-emu/RootFS/Ubuntu_22_04/root/.aria/`) o en el home del host. Hay que verificar cuál usa el SDK y asegurar que persistan entre sesiones.
+- **Verificado:** Pairing real con device `1WM103502L1284` (2026-02-26)
+- Los certificados persisten en `~/.aria/` entre sesiones — FEX-Emu mapea el home del host transparentemente
+- No se guardan dentro del rootfs (`~/.fex-emu/RootFS/...`)
 
 ---
 
@@ -197,10 +200,14 @@ El streaming final para aria-guard usa la arquitectura de bridge:
 - Desactivar AP isolation en el router
 - Preferir USB para testing inicial
 
-### FEX-Emu: "command not found" para aria-doctor
-- Verificar que el SDK está dentro del rootfs:
+### FEX-Emu: "command not found" para aria / aria-doctor
+- El CLI `aria` no se instala en el PATH estándar. Está en:
+  ```
+  /usr/local/lib/python3.10/dist-packages/bin/aria
+  ```
+- Usar siempre la ruta completa:
   ```bash
-  FEXBash -c "pip show projectaria-client-sdk"
+  PYTHONNOUSERSITE=1 FEXBash -c "/usr/local/lib/python3.10/dist-packages/bin/aria-doctor"
   ```
 - Si no está, reinstalar:
   ```bash
@@ -211,31 +218,52 @@ El streaming final para aria-guard usa la arquitectura de bridge:
 
 ---
 
-## Perfiles de streaming disponibles
+## Perfiles de streaming — resultados reales (Exp 004)
 
-| Perfil | Interfaz | Descripción |
-|--------|----------|-------------|
-| `profile18` | WiFi | RGB + SLAM cams + IMU (usado en aria-guard vía WiFi) |
-| `profile28` | USB | RGB + SLAM cams + IMU (usado en aria-guard vía USB) |
-| (otros) | — | Consultar doc oficial para lista completa |
+### Perfiles streaming-optimized (los únicos viables bajo FEX-Emu)
 
-> **Nota:** El receiver (`aria_receiver.py`) selecciona automáticamente profile28 para USB y profile18 para WiFi.
+| Perfil | FPS RGB real | Resolución | Audio | Notas |
+|--------|-------------|------------|-------|-------|
+| `profile12` | **11.2 FPS** | 1408x1408 | No | **MEJOR opción** — más estable, sin riesgo de crash |
+| `profile18` | **9.0 FPS** | 1408x1408 | Sí | Funciona si NO te subscribes a audio |
 
-> **TODO:** Completar tabla de perfiles después de probar con las gafas reales.
+### Perfiles NO streaming-optimized (no usar bajo FEX-Emu)
+
+| Perfil | FPS RGB real | Notas |
+|--------|-------------|-------|
+| `profile9` | 1.7 | DDS no mantiene ritmo bajo emulación |
+| `profile14` | 1.3 | Ídem |
+| `profile10` | 0.9 | Ídem |
+| `profile25` | 0.9 | Ídem |
+| `profile15` | 0.6 | 30 FPS nominal pero no streaming-optimized |
+
+### SLAM cameras
+- Profile28, subscription SLAM: **49 FPS** total (2 cameras @ 640x480)
+
+### Restricciones críticas
+- **NUNCA subscribirse a audio** → crash `free(): invalid size` bajo FEX-Emu
+- Usar `subscriber_data_type` filter para subscribirse solo a RGB (o SLAM, o IMU) individualmente
+- Gen2 SDK: "Not implemented" en hardware gen1 — no usar
+
+> **Recomendación:** Usar `profile12` con subscription `aria.StreamingDataType.Rgb` para el pipeline principal.
 
 ---
 
 ## Checklist Phase 2
 
 - [ ] Ejecutar `aria-doctor` bajo FEX-Emu
-- [ ] Hacer pairing por USB con `aria auth pair`
-- [ ] Verificar dónde se guardan los certificados
-- [ ] Probar streaming USB básico (`device_stream --interface usb`)
+- [x] Hacer pairing por USB con `aria auth pair` (device 1WM103502L1284, 2026-02-26)
+- [x] Verificar dónde se guardan los certificados → `~/.aria/tls-client-certs/<SERIAL>/`
+- [x] Probar streaming USB — **funciona!** Profile12 @ 11.2 FPS RGB (1408x1408x3)
 - [ ] Probar streaming WiFi (`device_stream --interface wifi`)
-- [ ] Medir latencia del stream bajo FEX-Emu
+- [x] Medir FPS bajo FEX-Emu → 11.2 FPS (profile12), 9.0 FPS (profile18)
+- [x] Validar image.tobytes() → OK, 5.9 MB/frame, 0 errores
 - [x] `src/receiver/aria_receiver.py` implementado (envía frames por ZMQ, protocol v2)
 - [x] `src/bridge/frame_consumer.py` implementado (consumer nativo ARM64)
 - [x] `src/bridge/aria_bridge_observer.py` implementado (drop-in para aria-guard)
+- [ ] Actualizar `aria_receiver.py` para usar profile12 + RGB-only subscription
 - [ ] Test pipeline completo: Aria → FEX-Emu → ZMQ → aria-guard
+- [ ] Probar RGB + SLAM + IMU combinado con profile12
 
 > **Importante:** Usar siempre `PYTHONNOUSERSITE=1` al ejecutar bajo FEX-Emu.
+> **Importante:** Usar `profile12` (no profile28) y subscribirse SOLO a RGB para evitar crashes.

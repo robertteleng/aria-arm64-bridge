@@ -19,7 +19,6 @@ import threading
 import time
 from typing import Dict, Any, Optional
 
-import cv2
 import numpy as np
 import zmq
 
@@ -70,73 +69,81 @@ class AriaBridgeObserver:
         poller = zmq.Poller()
         poller.register(socket, zmq.POLLIN)
 
-        while not self._stop_event.is_set():
-            events = dict(poller.poll(timeout=100))
-            if socket not in events:
-                continue
+        try:
+            while not self._stop_event.is_set():
+                events = dict(poller.poll(timeout=100))
+                if socket not in events:
+                    continue
 
-            data = socket.recv()
-            if len(data) < HEADER_SIZE:
-                continue
+                data = socket.recv()
+                if len(data) < HEADER_SIZE:
+                    continue
 
-            magic, cam_id, timestamp_ns, width, height, channels = struct.unpack(
-                HEADER_FORMAT, data[:HEADER_SIZE])
+                magic, cam_id, timestamp_ns, width, height, channels = struct.unpack(
+                    HEADER_FORMAT, data[:HEADER_SIZE])
 
-            if magic != HEADER_MAGIC:
-                continue
+                if magic != HEADER_MAGIC:
+                    continue
 
-            cam_name = CAM_NAMES.get(cam_id)
-            if cam_name is None:
-                continue
+                cam_name = CAM_NAMES.get(cam_id)
+                if cam_name is None:
+                    continue
 
-            expected_size = HEADER_SIZE + width * height * channels
-            if len(data) != expected_size:
-                continue
+                expected_size = HEADER_SIZE + width * height * channels
+                if len(data) != expected_size:
+                    continue
 
-            raw = np.frombuffer(data, dtype=np.uint8, offset=HEADER_SIZE)
-            if channels > 1:
-                raw = raw.reshape((height, width, channels))
-            else:
-                raw = raw.reshape((height, width))
+                raw = np.frombuffer(data, dtype=np.uint8, offset=HEADER_SIZE).copy()
+                if channels > 1:
+                    raw = raw.reshape((height, width, channels))
+                else:
+                    raw = raw.reshape((height, width))
 
-            # Post-process to match AriaDemoObserver output (BGR for OpenCV)
-            processed = self._process_frame(cam_name, raw)
+                # Post-process to match AriaDemoObserver output (BGR for OpenCV)
+                processed = self._process_frame(cam_name, raw)
 
-            with self._lock:
-                self._frames[cam_name] = processed
-                self._frame_counts[cam_name] += 1
+                with self._lock:
+                    self._frames[cam_name] = processed
+                    self._frame_counts[cam_name] += 1
 
-                # Periodic log
-                total = sum(self._frame_counts.values())
-                if total % 300 == 0:
-                    elapsed = time.time() - self._start_time
-                    fps = {k: v / elapsed for k, v in self._frame_counts.items() if v > 0}
-                    fps_str = " ".join(f"{k}={v:.1f}" for k, v in fps.items())
-                    print(f"[BRIDGE] {fps_str} fps (total={total})")
-
-        socket.close()
-        ctx.term()
+                    # Periodic log
+                    total = sum(self._frame_counts.values())
+                    if total % 300 == 0:
+                        elapsed = time.time() - self._start_time
+                        fps = {k: v / elapsed for k, v in self._frame_counts.items() if v > 0}
+                        fps_str = " ".join(f"{k}={v:.1f}" for k, v in fps.items())
+                        print(f"[BRIDGE] {fps_str} fps (total={total})")
+        except Exception as e:
+            print(f"[BRIDGE] ERROR in receive thread: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+        finally:
+            socket.close()
+            ctx.term()
 
     def _process_frame(self, cam_name, raw):
-        """Apply same transforms as AriaDemoObserver.on_image_received()."""
+        """Apply same transforms as AriaDemoObserver.on_image_received().
+
+        Uses numpy ops only (no cv2) to avoid numpy 2.x / OpenCV ABI mismatch.
+        """
         if cam_name == "rgb":
             # Aria RGB: rotate 90° CW, convert RGB→BGR
-            processed = cv2.rotate(raw, cv2.ROTATE_90_CLOCKWISE)
-            processed = cv2.cvtColor(processed, cv2.COLOR_RGB2BGR)
+            processed = np.rot90(raw, k=-1)  # 90° CW = rot90 with k=-1
+            processed = np.ascontiguousarray(processed[:, :, ::-1])  # RGB→BGR
         elif cam_name == "eye":
             # Eye: rotate 180°, grayscale→BGR
             processed = np.rot90(raw, 2)
             if len(processed.shape) == 2:
-                processed = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+                processed = np.stack([processed] * 3, axis=-1)
         elif cam_name in ("slam1", "slam2"):
             # SLAM: rotate 90° CW, grayscale→BGR
-            processed = cv2.rotate(raw, cv2.ROTATE_90_CLOCKWISE)
+            processed = np.rot90(raw, k=-1)
             if len(processed.shape) == 2:
-                processed = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR)
+                processed = np.stack([processed] * 3, axis=-1)
         else:
             processed = raw
 
-        return processed
+        return np.ascontiguousarray(processed)
 
     def get_frame(self, camera: str = "rgb") -> Optional[np.ndarray]:
         """Get the most recent frame for a camera. Returns BGR uint8 or None."""

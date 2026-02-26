@@ -407,7 +407,7 @@ OK - projectaria_tools importado correctamente
 ### Decisión
 - [x] Bridge ZMQ funcional
 - [x] aria-guard integrado
-- [ ] Probar con gafas reales (Fase 2)
+- [ ] Probar con gafas reales (Fase 2) → ver Exp 004
 
 ### Reflexión
 - **Lo que aprendí:**
@@ -418,3 +418,141 @@ OK - projectaria_tools importado correctamente
 - **Lo que haría diferente:**
   - Incluir camera_id en el protocolo desde el principio (no como v2)
   - Testear cross-process FEX-Emu antes de escribir el observer
+
+---
+
+## Exp 004: Streaming real desde Aria glasses vía FEX-Emu
+**Fecha:** 2026-02-26
+**Branch:** `main`
+**Estado:** Parcialmente exitoso — streaming funciona pero limitado a ~11 FPS
+
+---
+
+### Hipótesis
+> "Si conectamos las gafas Aria por USB y usamos el SDK bajo FEX-Emu, podemos recibir frames RGB a 30 FPS para alimentar el pipeline ZMQ → aria-guard."
+
+### Setup
+- Hardware: Jetson Orin Nano + Aria glasses (serial 1WM103502L1284)
+- Conexión: USB-C
+- SDK: projectaria-client-sdk 2.2.0 bajo FEX-Emu
+- Perfiles probados: profile9, profile10, profile12, profile14, profile15, profile18, profile25, profile28
+- Scripts de test: `/tmp/aria_samples/test_*.py`
+
+### Ejecución — Cronología de descubrimientos
+
+#### Fase A: Pairing y conexión básica
+- `aria auth pair` requiere ruta completa: `/usr/local/lib/python3.10/dist-packages/bin/aria`
+- Pairing exitoso con device `1WM103502L1284`
+- Certificados guardados en `~/.aria/tls-client-certs/1WM103502L1284/`
+- Necesario instalar `adb` + udev rules (vendor 2833) para permisos USB
+
+#### Fase B: Observer crash — aislamiento del problema
+1. **Streaming sin observer** → OK, 5s estable, estado "Streaming" confirmado
+2. **Con observer + todos los data types** → `free(): invalid size` crash
+3. **Con observer + solo RGB (subscription filter)** → OK! Primeros frames recibidos
+4. **Con audio subscription** → crash `free()` siempre
+
+**Conclusión:** El crash está en el callback mechanism del SDK bajo FEX-Emu, específicamente cuando recibe paquetes de audio. Subscribirse a un solo data type lo evita.
+
+#### Fase C: image.tobytes() funciona
+- `image.shape` → `(1408, 1408, 3)` — OK
+- `image.tobytes()` → 5,947,392 bytes — OK, sin crash
+- Esto confirma que el bridge ZMQ es viable (necesitamos extraer raw bytes)
+
+#### Fase D: Búsqueda de FPS
+
+| Perfil | FPS RGB | Notas |
+|--------|---------|-------|
+| profile12 | **11.2** | Streaming-optimized, sin audio, MEJOR opción |
+| profile18 | **9.0** | Streaming-optimized, con audio (no subscribirse) |
+| profile9 | 1.7 | No streaming-optimized |
+| profile14 | 1.3 | No streaming-optimized |
+| profile10 | 0.9 | No streaming-optimized |
+| profile25 | 0.9 | No streaming-optimized |
+| profile15 | 0.6 | 30 FPS nominal pero no streaming-optimized |
+
+**Descubrimiento clave:** Solo profile12 y profile18 son "streaming-optimized" (según la doc oficial). Los demás perfiles tienen 10 FPS nominal en la spec pero DDS bajo FEX-Emu no puede mantenerlo — solo los streaming-optimized entregan frames a ritmo constante.
+
+#### Fase E: SLAM cameras
+- Profile28 con subscription SLAM: **49.2 FPS** total
+  - cam 0: 26.1 FPS, 640x480 grayscale
+  - cam 1: 23.1 FPS, 640x480 grayscale
+- SLAM funciona bien bajo emulación
+
+#### Fase F: Múltiples sensores
+- RGB + SLAM + IMU (bitwise OR subscription) → script preparado, no probado con profile12
+- ALL sensors sin filtro → crash `free()` (audio causes it)
+- IMU solo → funcional, >100 samples/s
+
+#### Fase G: Gen2 SDK — callejón sin salida
+- Gen2 usa HTTP streaming en vez de DDS — podría dar mejor FPS
+- `sdk_gen2.HttpStreamingConfig()` → profile9 es el único soportado
+- Profile9 con gen2: "Not implemented" → **gen2 no funciona en hardware gen1 (nuestras gafas)**
+- Gen2 descartado como opción
+
+### Resultado
+```
+MEJOR CONFIGURACIÓN ENCONTRADA:
+  Profile: profile12 (streaming-optimized, sin audio)
+  Subscription: RGB only
+  FPS: ~11 RGB @ 1408x1408x3
+  SLAM: ~49 FPS @ 640x480 (probado con profile28)
+  Crash workaround: No subscribir audio
+  image.tobytes(): OK (5.9 MB/frame, 0 errores)
+```
+
+### Análisis
+- **11 FPS RGB es el máximo alcanzable** bajo FEX-Emu con perfiles streaming-optimized
+- Los perfiles tienen 10 FPS nominal en la spec — estamos obteniendo incluso ligeramente más
+- La limitación NO es FEX-Emu per se — es que los únicos perfiles streaming-optimized tienen 10 FPS nominal
+- Profile15 (30 FPS nominal) no es streaming-optimized → DDS bajo emulación no puede mantenerlo
+- El crash de `free()` con audio es un bug en el callback C++ → Python bajo emulación
+- SLAM cameras funcionan bien: 49 FPS total es más que suficiente
+- Gen2 SDK no es opción para nuestro hardware (gen1 Aria)
+- RAM disponible: ~4.5 GB libres con desktop, YOLO+depth usa ~2.5 GB → ajustado pero viable
+
+### Números clave para el pipeline
+| Componente | Latencia/FPS |
+|------------|-------------|
+| Aria → FEX-Emu (DDS) | ~11 FPS RGB |
+| FEX-Emu → ZMQ bridge | ~24ms (medido en Exp 003) |
+| ZMQ → aria-guard | <1ms (loopback) |
+| **Total pipeline** | **~11 FPS, ~35ms overhead** |
+
+### Decisión
+- [x] Streaming real funciona bajo FEX-Emu
+- [x] image.tobytes() validado — bridge ZMQ viable
+- [x] Profile12 = mejor configuración
+- [ ] Conectar frames reales al ZMQ bridge → aria-guard
+- [ ] Probar RGB + SLAM + IMU combinado con profile12
+
+### Reflexión
+- **Lo que aprendí:**
+  - "Streaming-optimized" en la doc de Aria no es marketing — es literal. Los perfiles no optimizados dan <2 FPS bajo emulación
+  - El audio subscription del SDK tiene bugs bajo FEX-Emu — evitarlo
+  - 30 FPS nominal ≠ 30 FPS real bajo emulación. Solo los perfiles de 10 FPS nominal (streaming-optimized) entregan frames consistentemente
+  - Gen2 SDK es para hardware gen2 únicamente — no hay fallback
+  - 11 FPS es suficiente para detección de personas con YOLO (no necesitas 30 FPS para saber si alguien está en una habitación)
+  - El cuello de botella real no es FEX-Emu ni ZMQ — es el protocolo DDS del SDK
+- **Lo que haría diferente:**
+  - Empezar con profile12 desde el principio (es el más limpio: streaming-optimized, sin audio)
+  - No perder tiempo con gen2 SDK en hardware gen1
+  - Probar subscription filters temprano — el crash con all-sensors habría sido confuso sin aislar
+  - Medir FPS con 15s mínimo de colección (las primeras lecturas con pocos segundos son inestables)
+- **Alternativas a explorar si 11 FPS no es suficiente:**
+  1. Workstation x86 como receiver intermedio (recibe a 30 FPS, reenvía al Jetson)
+  2. Cliente DDS nativo ARM64 (sin el SDK, implementar DDS subscriber propio)
+  3. Esperar soporte ARM64 oficial de Meta (unlikely a corto plazo)
+
+### Scripts de test creados
+Todos en `/tmp/aria_samples/`:
+- `test_streaming_no_observer.py` — streaming sin observer (validar estabilidad)
+- `test_gen1_subscribe_only.py` — primer test con subscription filter
+- `test_image_access.py` — validar image.shape
+- `test_image_bytes.py` — validar image.tobytes() (crítico para ZMQ)
+- `test_slam_fps.py` — SLAM cameras FPS
+- `test_all_sensors.py` — todos los sensores (crashea con audio)
+- `test_rgb_slam_imu.py` — RGB+SLAM+IMU combinado
+- `test_profile_scan.py` — escaneo de perfiles para FPS
+- `test_gen2_streaming.py` — gen2 SDK test
+- `test_gen2_profile15.py` — gen2 HTTP streaming
