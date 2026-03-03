@@ -629,26 +629,26 @@ Reduce overhead de logging.
 ### Límite real
 El CPU del proceso FEX-Emu receiver no es optimizable desde Python — lo controla FEX-Emu y el SDK.
 
-### Tercera ronda — telemetría automática
+### Tercera ronda — telemetría automática en host
 
-#### 9. Módulo `telemetry.py` — CSV automático sin intervención manual
-`src/aria_arm64_bridge/telemetry.py` arranca como thread daemon al crear el observer.
-Escribe en `logs/telemetry_YYYYMMDD_HHMMSS.csv` una fila por segundo con:
+#### 9. Telemetría integrada en `launch_pipeline.sh`
+La telemetría tiene que correr en el **host Jetson**, no en Docker, porque es el único
+proceso que tiene visión de todos los PIDs (FEXBash en host, aria-guard en Docker).
+
+`launch_pipeline.sh` arranca un loop bash en background que escribe en `logs/telemetry_YYYYMMDD_HHMMSS.csv`
+una fila por segundo. Sin dependencias extra — usa `/proc`, `free`, `top` y `tegrastats` (Jetson).
 
 | Columna | Fuente |
 |---------|--------|
-| `fex_cpu`, `fex_mem_mb` | psutil sobre PID del proceso FEXBash |
-| `obs_cpu`, `obs_mem_mb` | psutil sobre PID del observer |
-| `total_cpu` | psutil global |
-| `ram_used_mb`, `ram_free_mb` | psutil |
-| `gpu_util`, `gpu_ram_used_mb` | tegrastats (Jetson) |
-| `fps_rgb` | registrado desde el stats tick del observer |
+| `fex_cpu`, `fex_mem_mb` | `/proc/<PID>/stat` del proceso FEXBash |
+| `total_cpu` | `top -bn2` |
+| `ram_used_mb`, `ram_free_mb` | `free -m` |
+| `gpu_util`, `gpu_mem_mb` | `tegrastats` (Jetson) |
 
-Dependencia opcional: `pip install aria-arm64-bridge[telemetry]` (añade psutil).
-Sin psutil → telemetry desactivada silenciosamente, pipeline no se ve afectado.
+`telemetry.py` se mantiene en el paquete para uso con `AriaBridge` standalone (sin Docker).
 
 ### Decisión
 - [x] Optimizaciones implementadas en todos los archivos del pipeline
-- [x] Telemetría automática CSV implementada (`telemetry.py`)
+- [x] Telemetría automática CSV en host vía `launch_pipeline.sh`
 - [ ] Ejecutar en Jetson y analizar CSV resultante
 - [ ] Validar que `get_frame_if_new` reduce CPU en aria-guard con loop tight
