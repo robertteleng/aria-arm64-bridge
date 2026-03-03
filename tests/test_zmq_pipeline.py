@@ -36,7 +36,7 @@ def sender_thread(endpoint, num_frames):
         frame = np.full((HEIGHT, WIDTH, CHANNELS), i % 256, dtype=np.uint8)
         header = struct.pack(HEADER_FORMAT, HEADER_MAGIC, CAM_RGB, timestamp_ns,
                              WIDTH, HEIGHT, CHANNELS)
-        socket.send(header + frame.tobytes())
+        socket.send_multipart([header, memoryview(frame)], copy=False)
         time.sleep(0.01)
 
     time.sleep(0.2)  # let consumer drain
@@ -64,14 +64,20 @@ def test_pipeline():
             errors.append(f"Timeout waiting for frame {received}")
             break
 
-        data = socket.recv()
-
-        # Verify header
-        if len(data) < HEADER_SIZE:
-            errors.append(f"Frame {received}: too short ({len(data)} bytes)")
+        parts = socket.recv_multipart()
+        if len(parts) != 2:
+            errors.append(f"Frame {received}: expected 2 parts, got {len(parts)}")
+            received += 1
             continue
 
-        magic, cam_id, ts_ns, w, h, ch = struct.unpack(HEADER_FORMAT, data[:HEADER_SIZE])
+        header_data, pixel_data = parts
+
+        if len(header_data) < HEADER_SIZE:
+            errors.append(f"Frame {received}: header too short ({len(header_data)} bytes)")
+            received += 1
+            continue
+
+        magic, cam_id, ts_ns, w, h, ch = struct.unpack(HEADER_FORMAT, header_data[:HEADER_SIZE])
 
         if magic != HEADER_MAGIC:
             errors.append(f"Frame {received}: bad magic {magic!r}")
@@ -80,11 +86,11 @@ def test_pipeline():
         if w != WIDTH or h != HEIGHT or ch != CHANNELS:
             errors.append(f"Frame {received}: wrong dimensions {w}x{h}x{ch}")
 
-        expected_size = HEADER_SIZE + WIDTH * HEIGHT * CHANNELS
-        if len(data) != expected_size:
-            errors.append(f"Frame {received}: size mismatch {len(data)} vs {expected_size}")
+        expected_pixels = WIDTH * HEIGHT * CHANNELS
+        if len(pixel_data) != expected_pixels:
+            errors.append(f"Frame {received}: pixel size mismatch {len(pixel_data)} vs {expected_pixels}")
         else:
-            frame = np.frombuffer(data, dtype=np.uint8, offset=HEADER_SIZE).reshape((HEIGHT, WIDTH, CHANNELS))
+            frame = np.frombuffer(pixel_data, dtype=np.uint8).reshape((HEIGHT, WIDTH, CHANNELS))
             expected_val = received % 256
             if not np.all(frame == expected_val):
                 errors.append(f"Frame {received}: pixel mismatch")

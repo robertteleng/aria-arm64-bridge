@@ -20,7 +20,7 @@ Tested on Jetson Orin Nano (8 GB, JetPack 6.x):
 
 | Metric | Value |
 |--------|-------|
-| RGB FPS | ~11 (profile12, streaming-optimised) |
+| RGB FPS | ~12 (profile12, streaming-optimised) |
 | Resolution | 1408 x 1408 x 3 |
 | Bridge latency | ~24 ms |
 | SLAM FPS | ~49 (2 cameras @ 640x480) |
@@ -118,7 +118,9 @@ observer.stop()
 - **Use `profile12`** (default) — it's the only streaming-optimised profile that works reliably under FEX-Emu
 - **Never subscribe to audio** — causes `free(): invalid size` crash under emulation
 - **Always use `PYTHONNOUSERSITE=1`** when running under FEX-Emu
-- **11 FPS is the ceiling** for RGB under FEX-Emu with gen1 Aria glasses (DDS protocol limitation, not CPU)
+- **~12 FPS is the ceiling** for RGB under FEX-Emu with gen1 Aria glasses (DDS protocol limitation, not CPU)
+- **`get_frame()` returns a read-only view** — call `.copy()` only if you need to modify the array
+- **Use `get_frame_if_new(camera, version)`** in tight loops to avoid processing the same frame twice
 
 ## Project structure
 

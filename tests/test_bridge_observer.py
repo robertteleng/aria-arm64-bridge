@@ -40,7 +40,7 @@ def mock_sender(endpoint, num_frames, width, height):
         timestamp_ns = int(time.monotonic() * 1e9)
         header = struct.pack(HEADER_FORMAT, HEADER_MAGIC, CAM_RGB, timestamp_ns,
                              width, height, 3)
-        socket.send(header + frame.tobytes())
+        socket.send_multipart([header, memoryview(frame)], copy=False)
         time.sleep(0.02)
 
     time.sleep(0.3)

@@ -43,7 +43,7 @@ class AriaBridge:
         Aria glasses IP address (required for wifi).
     profile : str
         Streaming profile.  ``"profile12"`` (default) is streaming-optimised
-        and delivers ~11 FPS RGB at 1408x1408.
+        and delivers ~12 FPS RGB at 1408x1408.
     zmq_endpoint : str
         ZMQ endpoint for the internal bridge.
     receiver_script : str or None
@@ -193,7 +193,7 @@ class AriaBridge:
     def _drain_stdout(stream):
         """Read and print receiver stdout so the pipe never fills and blocks."""
         for line in stream:
-            print(line.decode(errors="replace"), end="", flush=True)
+            print(line.decode(errors="replace"), end="")
 
     @staticmethod
     def _find_receiver() -> str:

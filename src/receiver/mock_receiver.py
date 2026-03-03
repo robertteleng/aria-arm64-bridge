@@ -68,7 +68,7 @@ def run(zmq_endpoint, fps, width, height):
                              width, height, channels)
 
         try:
-            socket.send(header + frame.tobytes(), zmq.NOBLOCK)
+            socket.send_multipart([header, memoryview(frame)], zmq.NOBLOCK, copy=False)
         except zmq.Again:
             pass  # consumer too slow, drop frame
 

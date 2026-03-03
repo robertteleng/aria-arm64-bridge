@@ -73,7 +73,8 @@ class AriaFrameObserver:
         header = struct.pack(HEADER_FORMAT, HEADER_MAGIC, cam_id, timestamp_ns,
                              width, height, channels)
         try:
-            self._socket.send(header + image.tobytes(), zmq.NOBLOCK)
+            # Avoid allocating a new 6MB buffer for header+pixels each frame.
+            self._socket.send_multipart([header, memoryview(image)], zmq.NOBLOCK, copy=False)
         except zmq.Again:
             return  # consumer too slow, drop frame
 
