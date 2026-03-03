@@ -53,6 +53,7 @@ class AriaBridgeObserver:
         # Frame storage (BGR, post-processed like AriaDemoObserver)
         self._frames = {"rgb": None, "eye": None, "slam1": None, "slam2": None}
         self._frame_counts = {k: 0 for k in self._frames}
+        self._frame_versions = {k: 0 for k in self._frames}
         self._start_time = time.time()
 
         # Start receive thread
@@ -75,12 +76,16 @@ class AriaBridgeObserver:
                 if socket not in events:
                     continue
 
-                data = socket.recv()
-                if len(data) < HEADER_SIZE:
+                parts = socket.recv_multipart(copy=False)
+                if len(parts) != 2:
+                    continue
+
+                header_buf, pixel_buf = parts
+                if len(header_buf) < HEADER_SIZE:
                     continue
 
                 magic, cam_id, timestamp_ns, width, height, channels = struct.unpack(
-                    HEADER_FORMAT, data[:HEADER_SIZE])
+                    HEADER_FORMAT, bytes(header_buf))
 
                 if magic != HEADER_MAGIC:
                     continue
@@ -89,15 +94,12 @@ class AriaBridgeObserver:
                 if cam_name is None:
                     continue
 
-                expected_size = HEADER_SIZE + width * height * channels
-                if len(data) != expected_size:
+                expected_pixels = width * height * channels
+                if len(pixel_buf) != expected_pixels:
                     continue
 
-                raw = np.frombuffer(data, dtype=np.uint8, offset=HEADER_SIZE).copy()
-                if channels > 1:
-                    raw = raw.reshape((height, width, channels))
-                else:
-                    raw = raw.reshape((height, width))
+                shape = (height, width, channels) if channels > 1 else (height, width)
+                raw = np.frombuffer(pixel_buf, dtype=np.uint8).reshape(shape)
 
                 # Post-process to match AriaDemoObserver output (BGR for OpenCV)
                 processed = self._process_frame(cam_name, raw)
@@ -105,14 +107,16 @@ class AriaBridgeObserver:
                 with self._lock:
                     self._frames[cam_name] = processed
                     self._frame_counts[cam_name] += 1
+                    self._frame_versions[cam_name] += 1
 
-                    # Periodic log
-                    total = sum(self._frame_counts.values())
-                    if total % 300 == 0:
-                        elapsed = time.time() - self._start_time
-                        fps = {k: v / elapsed for k, v in self._frame_counts.items() if v > 0}
-                        fps_str = " ".join(f"{k}={v:.1f}" for k, v in fps.items())
-                        print(f"[BRIDGE] {fps_str} fps (total={total})")
+                total = sum(self._frame_counts.values())  # outside lock
+                if total % 300 == 0:
+                    elapsed = time.time() - self._start_time
+                    with self._lock:
+                        counts = dict(self._frame_counts)
+                    fps = {k: v / elapsed for k, v in counts.items() if v > 0}
+                    fps_str = " ".join(f"{k}={v:.1f}" for k, v in fps.items())
+                    print(f"[BRIDGE] {fps_str} fps (total={total})")
         except Exception as e:
             print(f"[BRIDGE] ERROR in receive thread: {e}", flush=True)
             import traceback
@@ -121,35 +125,55 @@ class AriaBridgeObserver:
             socket.close()
             ctx.term()
 
-    def _process_frame(self, cam_name, raw):
+    @staticmethod
+    def _process_frame(cam_name, raw):
         """Apply same transforms as AriaDemoObserver.on_image_received().
 
         Uses numpy ops only (no cv2) to avoid numpy 2.x / OpenCV ABI mismatch.
+        Each path produces exactly one contiguous copy via ascontiguousarray.
         """
         if cam_name == "rgb":
-            # Aria RGB: rotate 90° CW, convert RGB→BGR
-            processed = np.rot90(raw, k=-1)  # 90° CW = rot90 with k=-1
-            processed = np.ascontiguousarray(processed[:, :, ::-1])  # RGB→BGR
-        elif cam_name == "eye":
-            # Eye: rotate 180°, grayscale→BGR
-            processed = np.rot90(raw, 2)
-            if len(processed.shape) == 2:
-                processed = np.stack([processed] * 3, axis=-1)
-        elif cam_name in ("slam1", "slam2"):
-            # SLAM: rotate 90° CW, grayscale→BGR
-            processed = np.rot90(raw, k=-1)
-            if len(processed.shape) == 2:
-                processed = np.stack([processed] * 3, axis=-1)
-        else:
-            processed = raw
-
-        return np.ascontiguousarray(processed)
+            return np.ascontiguousarray(np.rot90(raw, k=-1)[:, :, ::-1])
+        if cam_name == "eye":
+            rotated = np.rot90(raw, 2)
+            if rotated.ndim == 2:
+                return np.ascontiguousarray(np.stack([rotated] * 3, axis=-1))
+            return np.ascontiguousarray(rotated)
+        if cam_name in ("slam1", "slam2"):
+            rotated = np.rot90(raw, k=-1)
+            if rotated.ndim == 2:
+                return np.ascontiguousarray(np.stack([rotated] * 3, axis=-1))
+            return np.ascontiguousarray(rotated)
+        return np.ascontiguousarray(raw)
 
     def get_frame(self, camera: str = "rgb") -> Optional[np.ndarray]:
-        """Get the most recent frame for a camera. Returns BGR uint8 or None."""
+        """Get the most recent frame for a camera. Returns BGR uint8 or None.
+
+        Returns a read-only view — do not modify the array in place.
+        Call .copy() yourself if you need to write to it.
+        """
         with self._lock:
             frame = self._frames.get(camera)
-            return frame.copy() if frame is not None else None
+            if frame is None:
+                return None
+            frame.flags.writeable = False
+            return frame
+
+    def get_frame_if_new(self, camera: str = "rgb", last_version: int = -1):
+        """Returns (frame, version) only if the frame is newer than last_version.
+
+        Returns (None, last_version) if nothing new. Avoids processing the
+        same frame twice in a tight loop.
+        """
+        with self._lock:
+            v = self._frame_versions.get(camera, 0)
+            if v == last_version:
+                return None, last_version
+            frame = self._frames.get(camera)
+            if frame is None:
+                return None, last_version
+            frame.flags.writeable = False
+            return frame, v
 
     def get_stats(self) -> Dict[str, Any]:
         elapsed = time.time() - self._start_time

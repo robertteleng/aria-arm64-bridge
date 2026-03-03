@@ -556,3 +556,52 @@ Todos en `/tmp/aria_samples/`:
 - `test_profile_scan.py` — escaneo de perfiles para FPS
 - `test_gen2_streaming.py` — gen2 SDK test
 - `test_gen2_profile15.py` — gen2 HTTP streaming
+
+---
+
+## Exp 005: Optimización de CPU en AriaBridgeObserver
+**Fecha:** 2026-03-03
+**Branch:** `main`
+**Estado:** Implementado, pendiente de validar en Jetson
+
+---
+
+### Problema
+El CPU del Jetson iba al máximo cuando se ejecutaba el observer. El receiver (FEX-Emu) no es controlable, pero el observer nativo sí.
+
+### Análisis de culpables
+
+| Problema | Impacto estimado |
+|----------|-----------------|
+| `_process_frame` RGB: 2 copias de 5.9 MB | ~70 MB/s de memoria innecesaria |
+| `get_frame` hace `.copy()` en cada llamada | ~70 MB/s si se llama en loop a 12 FPS |
+| Cálculo de stats dentro del lock | Bloquea el mutex durante divisiones y prints |
+
+### Cambios aplicados en `observer.py`
+
+#### 1. `_process_frame` — de 2 copias a 1
+Antes: `rot90` crea copia → `ascontiguousarray` crea otra copia.
+Ahora: `np.ascontiguousarray(np.rot90(raw, k=-1)[:, :, ::-1])` — una sola operación.
+
+#### 2. `get_frame` — read-only view sin `.copy()`
+Ahora devuelve el array con `writeable=False`. El usuario llama `.copy()` solo si necesita modificarlo.
+
+Nuevo método `get_frame_if_new(camera, last_version)` — devuelve frame solo cuando hay uno nuevo. Evita procesar el mismo frame dos veces en loops ajustados:
+```python
+version = -1
+while True:
+    frame, version = observer.get_frame_if_new("rgb", version)
+    if frame is not None:
+        tu_modelo(frame)
+```
+
+#### 3. `_receive_loop` — stats fuera del lock
+El cálculo de FPS (`dict()`, divisiones, `print()`) ya no ocurre con el mutex tomado.
+
+### Límite real
+El CPU del proceso FEX-Emu receiver no es optimizable desde Python — lo controla FEX-Emu y el SDK. Solo el observer nativo era optimizable.
+
+### Decisión
+- [x] Optimizaciones implementadas en `observer.py`
+- [ ] Medir reducción de CPU en Jetson (antes/después con `htop`)
+- [ ] Validar que `get_frame_if_new` reduce CPU en aria-guard si está en loop tight

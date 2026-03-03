@@ -21,6 +21,7 @@ Example::
 import os
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -106,6 +107,13 @@ class AriaBridge:
             stderr=subprocess.STDOUT,
         )
 
+        # Drain receiver stdout to avoid blocking the process when the pipe fills up
+        threading.Thread(
+            target=self._drain_stdout,
+            args=(self._process.stdout,),
+            daemon=True,
+        ).start()
+
         # Start native observer
         self._observer = AriaBridgeObserver(zmq_endpoint=self._zmq_endpoint)
 
@@ -180,6 +188,12 @@ class AriaBridge:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _drain_stdout(stream):
+        """Read and print receiver stdout so the pipe never fills and blocks."""
+        for line in stream:
+            print(line.decode(errors="replace"), end="", flush=True)
 
     @staticmethod
     def _find_receiver() -> str:

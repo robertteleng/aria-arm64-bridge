@@ -56,6 +56,7 @@ class AriaBridgeObserver:
             "rgb": None, "eye": None, "slam1": None, "slam2": None,
         }
         self._frame_counts: Dict[str, int] = {k: 0 for k in self._frames}
+        self._frame_versions: Dict[str, int] = {k: 0 for k in self._frames}
         self._start_time = time.time()
 
         self._thread = threading.Thread(target=self._receive_loop, daemon=True)
@@ -66,10 +67,41 @@ class AriaBridgeObserver:
     # ------------------------------------------------------------------
 
     def get_frame(self, camera: str = "rgb") -> Optional[np.ndarray]:
-        """Most recent frame for *camera*. Returns BGR ``uint8`` or ``None``."""
+        """Most recent frame for *camera*. Returns BGR ``uint8`` or ``None``.
+
+        Returns a read-only view — do not modify the array in place.
+        Call ``.copy()`` yourself if you need to write to it.
+        """
         with self._lock:
             frame = self._frames.get(camera)
-            return frame.copy() if frame is not None else None
+            if frame is None:
+                return None
+            frame.flags.writeable = False
+            return frame
+
+    def get_frame_if_new(self, camera: str = "rgb", last_version: int = -1):
+        """Returns ``(frame, version)`` only if the frame is newer than *last_version*.
+
+        Returns ``(None, last_version)`` if nothing new. Use this to avoid
+        processing the same frame twice in a tight loop.
+
+        Example::
+
+            version = -1
+            while True:
+                frame, version = observer.get_frame_if_new("rgb", version)
+                if frame is not None:
+                    process(frame)
+        """
+        with self._lock:
+            v = self._frame_versions.get(camera, 0)
+            if v == last_version:
+                return None, last_version
+            frame = self._frames.get(camera)
+            if frame is None:
+                return None, last_version
+            frame.flags.writeable = False
+            return frame, v
 
     def get_latest(self, camera: str = "rgb") -> Optional[Frame]:
         """Most recent :class:`Frame` for *camera*, or ``None``."""
@@ -117,12 +149,16 @@ class AriaBridgeObserver:
                 if socket not in events:
                     continue
 
-                data = socket.recv()
-                if len(data) < HEADER_SIZE:
+                parts = socket.recv_multipart(copy=False)
+                if len(parts) != 2:
+                    continue
+
+                header_buf, pixel_buf = parts
+                if len(header_buf) < HEADER_SIZE:
                     continue
 
                 magic, cam_id, timestamp_ns, width, height, channels = struct.unpack(
-                    HEADER_FORMAT, data[:HEADER_SIZE])
+                    HEADER_FORMAT, bytes(header_buf))
 
                 if magic != HEADER_MAGIC:
                     continue
@@ -131,28 +167,32 @@ class AriaBridgeObserver:
                 if cam_name is None:
                     continue
 
-                expected_size = HEADER_SIZE + width * height * channels
-                if len(data) != expected_size:
+                expected_pixels = width * height * channels
+                if len(pixel_buf) != expected_pixels:
                     continue
 
-                raw = np.frombuffer(data, dtype=np.uint8, offset=HEADER_SIZE).copy()
-                if channels > 1:
-                    raw = raw.reshape((height, width, channels))
-                else:
-                    raw = raw.reshape((height, width))
+                # frombuffer on ZMQ's zero-copy buffer — no extra copy here.
+                # _process_frame always calls ascontiguousarray = the one copy.
+                shape = (height, width, channels) if channels > 1 else (height, width)
+                raw = np.frombuffer(pixel_buf, dtype=np.uint8).reshape(shape)
 
                 processed = self._process_frame(cam_name, raw)
 
                 with self._lock:
                     self._frames[cam_name] = processed
                     self._frame_counts[cam_name] += 1
+                    self._frame_versions[cam_name] += 1
 
-                    total = sum(self._frame_counts.values())
-                    if total % 300 == 0:
-                        elapsed = time.time() - self._start_time
-                        fps = {k: v / elapsed for k, v in self._frame_counts.items() if v > 0}
-                        fps_str = " ".join(f"{k}={v:.1f}" for k, v in fps.items())
-                        print(f"[aria-bridge] {fps_str} fps (total={total})")
+                total = sum(self._frame_counts.values())  # outside lock, 4 ints
+
+                # Log stats outside the lock — no need to hold it for prints
+                if total % 300 == 0:
+                    elapsed = time.time() - self._start_time
+                    with self._lock:
+                        counts = dict(self._frame_counts)
+                    fps = {k: v / elapsed for k, v in counts.items() if v > 0}
+                    fps_str = " ".join(f"{k}={v:.1f}" for k, v in fps.items())
+                    print(f"[aria-bridge] {fps_str} fps (total={total})")
         except Exception as e:
             print(f"[aria-bridge] ERROR in receive thread: {e}", flush=True)
             traceback.print_exc()
@@ -162,18 +202,21 @@ class AriaBridgeObserver:
 
     @staticmethod
     def _process_frame(cam_name: str, raw: np.ndarray) -> np.ndarray:
-        """Rotate and colour-convert to match Aria SDK standard output (BGR)."""
+        """Rotate and colour-convert to match Aria SDK standard output (BGR).
+
+        All paths produce exactly one contiguous copy — no intermediate arrays.
+        """
         if cam_name == "rgb":
-            processed = np.rot90(raw, k=-1)
-            processed = np.ascontiguousarray(processed[:, :, ::-1])
-        elif cam_name == "eye":
-            processed = np.rot90(raw, 2)
-            if processed.ndim == 2:
-                processed = np.stack([processed] * 3, axis=-1)
-        elif cam_name in ("slam1", "slam2"):
-            processed = np.rot90(raw, k=-1)
-            if processed.ndim == 2:
-                processed = np.stack([processed] * 3, axis=-1)
-        else:
-            processed = raw
-        return np.ascontiguousarray(processed)
+            # rot90(k=-1) + BGR flip in one ascontiguousarray call
+            return np.ascontiguousarray(np.rot90(raw, k=-1)[:, :, ::-1])
+        if cam_name == "eye":
+            rotated = np.rot90(raw, 2)
+            if rotated.ndim == 2:
+                return np.ascontiguousarray(np.stack([rotated] * 3, axis=-1))
+            return np.ascontiguousarray(rotated)
+        if cam_name in ("slam1", "slam2"):
+            rotated = np.rot90(raw, k=-1)
+            if rotated.ndim == 2:
+                return np.ascontiguousarray(np.stack([rotated] * 3, axis=-1))
+            return np.ascontiguousarray(rotated)
+        return np.ascontiguousarray(raw)
