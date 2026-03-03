@@ -65,6 +65,7 @@ class AriaBridgeObserver:
         """Background thread: receive frames from ZMQ and store them."""
         ctx = zmq.Context()
         socket = ctx.socket(zmq.PULL)
+        socket.setsockopt(zmq.RCVHWM, 2)  # drop oldest frames if consumer is slow
         socket.connect(self._endpoint)
 
         poller = zmq.Poller()

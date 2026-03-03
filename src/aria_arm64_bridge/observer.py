@@ -138,6 +138,7 @@ class AriaBridgeObserver:
     def _receive_loop(self):
         ctx = zmq.Context()
         socket = ctx.socket(zmq.PULL)
+        socket.setsockopt(zmq.RCVHWM, 2)  # drop oldest frames if consumer is slow
         socket.connect(self._endpoint)
 
         poller = zmq.Poller()

@@ -106,7 +106,7 @@ def run(zmq_endpoint, callback=None):
             callback(cam_name, timestamp_ns, frame)
 
         total = sum(frame_counts.values())
-        if total % 30 == 0:
+        if total % 90 == 0:
             elapsed = time.monotonic() - start_time
             fps = total / elapsed if elapsed > 0 else 0
             avg_latency = sum(latencies[-30:]) / min(len(latencies), 30)

@@ -601,7 +601,35 @@ El cálculo de FPS (`dict()`, divisiones, `print()`) ya no ocurre con el mutex t
 ### Límite real
 El CPU del proceso FEX-Emu receiver no es optimizable desde Python — lo controla FEX-Emu y el SDK. Solo el observer nativo era optimizable.
 
+### Segunda ronda — auditoría completa del repo y más fixes
+
+Tras revisar todos los archivos Python con ZMQ:
+
+#### 4. `message_queue_size` SDK: 10 → 1
+En `src/receiver/aria_receiver.py` y `src/aria_arm64_bridge/receiver.py`.
+Reduce backlog en el SDK — callback solo recibe el frame más reciente.
+
+#### 5. `RCVHWM=2` en PULL sockets
+En `observer.py` y `aria_bridge_observer.py`, antes del `connect()`.
+Simétrico al `SNDHWM=2` ya existente. Evita acumulación ilimitada en el consumer.
+
+#### 6. `send_multipart` + `recv_multipart(copy=False)`
+Elimina `header + image.tobytes()` (6 MB concat por frame) usando ZMQ multipart zero-copy.
+Actualizado en todos los senders, receivers, tests y mocks.
+
+#### 7. `stdout=PIPE` drenado en thread daemon (`bridge.py`)
+Evita bloqueo del proceso receiver cuando el pipe se llena (64 KB límite en Linux).
+
+#### 8. Print en `frame_consumer.py`: 30 → 90 frames
+Reduce overhead de logging.
+
+#### Nota sobre IPC
+`ipc://` descartado como default: el pipeline usa Docker, y `ipc:///tmp/...` no cruza el boundary host/contenedor sin `-v /tmp:/tmp`. Se deja `tcp://127.0.0.1:5555` como default. Evaluable para modo host-only futuro.
+
+### Límite real
+El CPU del proceso FEX-Emu receiver no es optimizable desde Python — lo controla FEX-Emu y el SDK.
+
 ### Decisión
-- [x] Optimizaciones implementadas en `observer.py`
+- [x] Optimizaciones implementadas en todos los archivos del pipeline
 - [ ] Medir reducción de CPU en Jetson (antes/después con `htop`)
-- [ ] Validar que `get_frame_if_new` reduce CPU en aria-guard si está en loop tight
+- [ ] Validar que `get_frame_if_new` reduce CPU en aria-guard con loop tight

@@ -139,7 +139,7 @@ def run(interface, device_ip, zmq_endpoint, profile):
     # Subscribe to RGB only — audio subscription crashes under FEX-Emu (free(): invalid size)
     sub_config = streaming_client.subscription_config
     sub_config.subscriber_data_type = aria.StreamingDataType.Rgb
-    sub_config.message_queue_size[aria.StreamingDataType.Rgb] = 10
+    sub_config.message_queue_size[aria.StreamingDataType.Rgb] = 1  # latest frame only, reduce backlog
     streaming_client.subscription_config = sub_config
 
     observer = AriaFrameObserver(socket)
