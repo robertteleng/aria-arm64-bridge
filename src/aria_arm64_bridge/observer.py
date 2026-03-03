@@ -19,6 +19,11 @@ from .protocol import (
     DEFAULT_ZMQ_ENDPOINT, CAM_NAMES,
 )
 
+try:
+    from .telemetry import Telemetry
+except Exception:
+    Telemetry = None  # type: ignore
+
 
 class Frame:
     """A single frame from the Aria glasses."""
@@ -47,7 +52,8 @@ class AriaBridgeObserver:
 
     fov_h = 1.919  # ~110 deg horizontal FOV (Aria RGB camera)
 
-    def __init__(self, zmq_endpoint: str = DEFAULT_ZMQ_ENDPOINT):
+    def __init__(self, zmq_endpoint: str = DEFAULT_ZMQ_ENDPOINT,
+                 telemetry_pid_fex: Optional[int] = None):
         self._endpoint = zmq_endpoint
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -58,6 +64,8 @@ class AriaBridgeObserver:
         self._frame_counts: Dict[str, int] = {k: 0 for k in self._frames}
         self._frame_versions: Dict[str, int] = {k: 0 for k in self._frames}
         self._start_time = time.time()
+
+        self._telemetry = Telemetry(pid_fex=telemetry_pid_fex) if Telemetry else None
 
         self._thread = threading.Thread(target=self._receive_loop, daemon=True)
         self._thread.start()
@@ -123,9 +131,11 @@ class AriaBridgeObserver:
             }
 
     def stop(self):
-        """Stop the background receive thread."""
+        """Stop the background receive thread and telemetry."""
         self._stop_event.set()
         self._thread.join(timeout=2)
+        if self._telemetry:
+            self._telemetry.stop()
 
     @property
     def is_running(self) -> bool:
@@ -194,6 +204,8 @@ class AriaBridgeObserver:
                     fps = {k: v / elapsed for k, v in counts.items() if v > 0}
                     fps_str = " ".join(f"{k}={v:.1f}" for k, v in fps.items())
                     print(f"[aria-bridge] {fps_str} fps (total={total})")
+                    if self._telemetry and "rgb" in fps:
+                        self._telemetry.record_fps(fps["rgb"])
         except Exception as e:
             print(f"[aria-bridge] ERROR in receive thread: {e}", flush=True)
             traceback.print_exc()

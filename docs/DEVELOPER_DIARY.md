@@ -629,7 +629,26 @@ Reduce overhead de logging.
 ### Límite real
 El CPU del proceso FEX-Emu receiver no es optimizable desde Python — lo controla FEX-Emu y el SDK.
 
+### Tercera ronda — telemetría automática
+
+#### 9. Módulo `telemetry.py` — CSV automático sin intervención manual
+`src/aria_arm64_bridge/telemetry.py` arranca como thread daemon al crear el observer.
+Escribe en `logs/telemetry_YYYYMMDD_HHMMSS.csv` una fila por segundo con:
+
+| Columna | Fuente |
+|---------|--------|
+| `fex_cpu`, `fex_mem_mb` | psutil sobre PID del proceso FEXBash |
+| `obs_cpu`, `obs_mem_mb` | psutil sobre PID del observer |
+| `total_cpu` | psutil global |
+| `ram_used_mb`, `ram_free_mb` | psutil |
+| `gpu_util`, `gpu_ram_used_mb` | tegrastats (Jetson) |
+| `fps_rgb` | registrado desde el stats tick del observer |
+
+Dependencia opcional: `pip install aria-arm64-bridge[telemetry]` (añade psutil).
+Sin psutil → telemetry desactivada silenciosamente, pipeline no se ve afectado.
+
 ### Decisión
 - [x] Optimizaciones implementadas en todos los archivos del pipeline
-- [ ] Medir reducción de CPU en Jetson (antes/después con `htop`)
+- [x] Telemetría automática CSV implementada (`telemetry.py`)
+- [ ] Ejecutar en Jetson y analizar CSV resultante
 - [ ] Validar que `get_frame_if_new` reduce CPU en aria-guard con loop tight

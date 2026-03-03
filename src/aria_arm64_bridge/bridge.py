@@ -114,8 +114,11 @@ class AriaBridge:
             daemon=True,
         ).start()
 
-        # Start native observer
-        self._observer = AriaBridgeObserver(zmq_endpoint=self._zmq_endpoint)
+        # Start native observer — pass receiver PID so telemetry can track it
+        self._observer = AriaBridgeObserver(
+            zmq_endpoint=self._zmq_endpoint,
+            telemetry_pid_fex=self._process.pid,
+        )
 
         # Wait for first frame
         deadline = time.monotonic() + timeout
