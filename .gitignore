@@ -26,10 +26,22 @@ logs/
 build/
 
 # Local tooling, not part of the project
-AGENTS.md
-CLAUDE.md
-.claude/
 .codex/
 .agents/
 .gemini/
 docs/oss-contribution/
+
+# Workspace tooling synced from a private template: never part of this public repo
+CLAUDE.md
+AGENTS.md
+.claude/
+docs/teamwork/
+docs/design/
+docs/development/
+docs/workflows/
+docs/project/SHIP_READINESS_CHECKLIST.md
+docs/research/templates/
+scripts/architecture/
+PAIR_WORKFLOW.md
+DEVELOPER_DIARY.md
+NEXT_SESSION.md
