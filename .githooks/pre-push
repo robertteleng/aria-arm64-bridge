@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Refuse to push a red tree. Bypass a known-broken push with --no-verify.
+exec "$(dirname "$0")/../scripts/check.sh"

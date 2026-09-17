@@ -1,0 +1,276 @@
+> Guía de trabajo en español, escrita durante el desarrollo (febrero-junio 2026). Algunos
+> detalles de versión son de esa época: desde el Client SDK 2.5.0 hay wheels aarch64 nativos
+> y FEX-Emu ya no es necesario. Ver el README.
+
+# Guía de conexión: Aria Glasses → Jetson Orin Nano
+
+Cómo emparejar, conectar y hacer streaming desde las gafas Meta Aria al Jetson.
+
+> **Importante:** El Aria Client SDK solo soporta x64 Linux oficialmente. En Jetson ARM64 todo se ejecuta bajo FEX-Emu.
+>
+> **JetPack 7.2:** existe y soporta Orin Nano. En junio de 2026 no eliminaba FEX-Emu porque
+> Meta aún no publicaba `projectaria-client-sdk` para Linux aarch64; desde la 2.5.0 (2026-09-04) sí.
+
+---
+
+## Requisitos previos
+
+### Hardware
+- Meta Aria glasses (con setup completado via Mobile Companion App)
+- Jetson Orin Nano con FEX-Emu + Aria SDK instalados (`scripts/setup_fex_emu.sh`, `scripts/setup_rootfs.sh`)
+- Cable USB-C para pairing inicial
+- Router WiFi 6 (5 GHz) para streaming inalámbrico — NO redes corporativas/universitarias
+
+### Software en Jetson
+- FEX-Emu con rootfs Ubuntu 22.04 x86_64
+- `projectaria-client-sdk` instalado en el rootfs (hecho en Phase 1)
+- Mobile Companion App en el teléfono (iOS/Android)
+
+### Routers recomendados (de la doc oficial)
+- Asus, Netgear, TP-Link con WiFi 6
+- Sin firewalls ni aislamiento de clientes
+- Red doméstica directa (el Jetson y las gafas en la misma red)
+
+---
+
+## Paso 1: Diagnóstico — aria-doctor
+
+Ejecutar el diagnóstico para verificar que el SDK funciona antes de intentar emparejar:
+
+```bash
+FEXBash -c "aria-doctor"
+```
+
+Esto verifica:
+- Que el SDK está correctamente instalado
+- Que las dependencias están presentes
+- Que hay conectividad básica
+
+> **Si falla:** Verificar que `projectaria-client-sdk` está instalado dentro del rootfs FEX-Emu, no en `~/.local/`.
+
+---
+
+## Paso 2: Pairing (una sola vez)
+
+El pairing genera certificados de autenticación entre el Jetson y las gafas. Solo hay que hacerlo una vez — los certificados persisten hasta factory reset o revocación manual.
+
+### Procedimiento
+
+1. **Conectar las gafas por USB** al Jetson
+2. **Encender las gafas** (LED debe estar activo)
+3. **Abrir la Mobile Companion App** en el teléfono
+4. **Ejecutar el pairing:**
+
+```bash
+# IMPORTANTE: el CLI aria no está en el PATH — usar ruta completa
+PYTHONNOUSERSITE=1 FEXBash -c "/usr/local/lib/python3.10/dist-packages/bin/aria auth pair"
+```
+
+5. **Aprobar en la app del móvil** — aparecerá un prompt. Verificar que el hash coincide entre la terminal y la app
+6. **Confirmación** — la terminal mostrará éxito
+
+### Certificados
+
+Los certificados se guardan en el **home del host** (no dentro del rootfs FEX-Emu):
+
+```
+~/.aria/tls-client-certs/<SERIAL>/
+├── tls-client.p12
+├── tls-client-key.pem
+└── tls-client.pem
+```
+
+- **Verificado:** pairing real con unas gafas Aria Gen1 (2026-02-26)
+- Los certificados persisten en `~/.aria/` entre sesiones — FEX-Emu mapea el home del host transparentemente
+- No se guardan dentro del rootfs (`~/.fex-emu/RootFS/...`)
+
+---
+
+## Paso 3: Verificar conexión USB
+
+Después del pairing, verificar que el Jetson ve las gafas:
+
+```bash
+# Ver si aparece como dispositivo USB
+lsusb | grep -i "meta\|aria\|facebook\|oculus"
+
+# Si aparece como interfaz de red USB (ethernet gadget)
+ip link show | grep usb
+```
+
+> **TODO:** Documentar el vendor ID / product ID de las gafas Aria por USB después de la primera conexión.
+
+---
+
+## Paso 4: Streaming por USB
+
+La forma más directa — sin depender de WiFi:
+
+```bash
+FEXBash -c "python3 -m device_stream --interface usb --update_iptables"
+```
+
+El flag `--update_iptables` configura las reglas de firewall necesarias para recibir el stream.
+
+### Desde Python (para integración con aria-guard)
+
+```python
+# Esto corre bajo FEX-Emu (x86_64 emulado)
+import aria.sdk as aria
+
+# Descubrir dispositivos
+device_client = aria.DeviceClient()
+device = device_client.connect()  # USB por defecto
+
+# Obtener streaming manager
+streaming_manager = device.streaming_manager
+
+# Configurar
+config = streaming_manager.streaming_config
+config.profile_name = "profile18"  # perfil por defecto
+config.use_ephemeral_certs = True  # protección contra eavesdropping
+
+# Iniciar streaming
+streaming_manager.start_streaming()
+
+# Crear observer para recibir frames
+class FrameObserver(aria.BaseStreamingClientObserver):
+    def on_image_received(self, image, record):
+        # Aquí se procesan los frames
+        # En producción: enviar via ZMQ al proceso nativo ARM64
+        pass
+
+# Registrar observer y suscribirse
+streaming_client = streaming_manager.streaming_client
+observer = FrameObserver()
+streaming_client.set_streaming_client_observer(observer)
+streaming_client.subscribe()
+```
+
+---
+
+## Paso 5: Streaming por WiFi
+
+Requiere que las gafas y el Jetson estén en la misma red WiFi.
+
+### Obtener IP de las gafas
+- Abrir la **Mobile Companion App** → Dashboard → ver IP de las gafas
+
+### Lanzar streaming
+
+```bash
+FEXBash -c "python3 -m device_stream --interface wifi --device-ip <IP_GAFAS> --update_iptables"
+```
+
+### Requisitos de red
+- WiFi 6 (802.11ax) en 5 GHz recomendado
+- Sin firewalls entre dispositivos
+- Sin aislamiento de clientes (AP isolation OFF)
+- NO funciona en redes corporativas, universitarias ni públicas
+
+---
+
+## Paso 6: Arquitectura en producción (aria-guard)
+
+El streaming final para aria-guard usa la arquitectura de bridge:
+
+```
+┌─────────────────────────┐     ┌──────────────────────────┐
+│  FEX-Emu (x86_64)       │     │  Nativo ARM64             │
+│                          │     │                            │
+│  aria.sdk → frames ──────┼─ZMQ─┼──→ aria-guard pipeline    │
+│  (receiver.py)           │     │     (CUDA, ML, alertas)   │
+│                          │     │                            │
+└─────────────────────────┘     └──────────────────────────┘
+```
+
+- **Proceso emulado:** Solo recibe frames del SDK y los pone en una cola ZMQ
+- **Proceso nativo:** aria-guard consume frames, ejecuta ML con CUDA, sin overhead de emulación
+- **Latencia esperada:** <50ms overhead de emulación (WiFi es el bottleneck real a ~30 FPS)
+
+---
+
+## Troubleshooting
+
+### "No device found"
+- Verificar USB: `lsusb` debe mostrar el dispositivo
+- Verificar que las gafas están encendidas y con batería
+- Re-ejecutar `aria-doctor`
+
+### "Certificate error" o "Not paired"
+- Re-ejecutar `FEXBash -c "aria auth pair"` con USB conectado
+- Verificar que la Mobile Companion App está abierta durante el pairing
+
+### WiFi streaming lento o con drops
+- Verificar que usa 5 GHz (no 2.4 GHz)
+- Acercar el router al Jetson y las gafas
+- Desactivar AP isolation en el router
+- Preferir USB para testing inicial
+
+### FEX-Emu: "command not found" para aria / aria-doctor
+- El CLI `aria` no se instala en el PATH estándar. Está en:
+  ```
+  /usr/local/lib/python3.10/dist-packages/bin/aria
+  ```
+- Usar siempre la ruta completa:
+  ```bash
+  PYTHONNOUSERSITE=1 FEXBash -c "/usr/local/lib/python3.10/dist-packages/bin/aria-doctor"
+  ```
+- Si no está, reinstalar:
+  ```bash
+  sudo pip install --platform manylinux2014_x86_64 --only-binary=:all: --no-deps \
+      --target $ROOTFS/usr/local/lib/python3.10/dist-packages \
+      projectaria-client-sdk==2.2.0
+  ```
+
+---
+
+## Perfiles de streaming — resultados reales (Exp 004)
+
+### Perfiles streaming-optimized (los únicos viables bajo FEX-Emu)
+
+| Perfil | FPS RGB real | Resolución | Audio | Notas |
+|--------|-------------|------------|-------|-------|
+| `profile12` | **11.2 FPS** | 1408x1408 | No | **MEJOR opción** — más estable, sin riesgo de crash |
+| `profile18` | **9.0 FPS** | 1408x1408 | Sí | Funciona si NO te subscribes a audio |
+
+### Perfiles NO streaming-optimized (no usar bajo FEX-Emu)
+
+| Perfil | FPS RGB real | Notas |
+|--------|-------------|-------|
+| `profile9` | 1.7 | DDS no mantiene ritmo bajo emulación |
+| `profile14` | 1.3 | Ídem |
+| `profile10` | 0.9 | Ídem |
+| `profile25` | 0.9 | Ídem |
+| `profile15` | 0.6 | 30 FPS nominal pero no streaming-optimized |
+
+### SLAM cameras
+- Profile28, subscription SLAM: **49 FPS** total (2 cameras @ 640x480)
+
+### Restricciones críticas
+- **NUNCA subscribirse a audio** → crash `free(): invalid size` bajo FEX-Emu
+- Usar `subscriber_data_type` filter para subscribirse solo a RGB (o SLAM, o IMU) individualmente
+- Gen2 SDK: "Not implemented" en hardware gen1 — no usar
+
+> **Recomendación:** Usar `profile12` con subscription `aria.StreamingDataType.Rgb` para el pipeline principal.
+
+---
+
+## Checklist Phase 2
+
+- [ ] Ejecutar `aria-doctor` bajo FEX-Emu
+- [x] Hacer pairing por USB con `aria auth pair` (2026-02-26)
+- [x] Verificar dónde se guardan los certificados → `~/.aria/tls-client-certs/<SERIAL>/`
+- [x] Probar streaming USB — **funciona!** Profile12 @ 11.2 FPS RGB (1408x1408x3)
+- [ ] Probar streaming WiFi (`device_stream --interface wifi`)
+- [x] Medir FPS bajo FEX-Emu → 11.2 FPS (profile12), 9.0 FPS (profile18)
+- [x] Validar image.tobytes() → OK, 5.9 MB/frame, 0 errores
+- [x] `src/aria_arm64_bridge/receiver.py` implementado (envía frames por ZMQ, protocol v2)
+- [x] `examples/frame_consumer.py` implementado (consumer nativo ARM64)
+- [x] `src/aria_arm64_bridge/observer.py` implementado (drop-in para aria-guard)
+- [ ] Actualizar `receiver.py` para usar profile12 + RGB-only subscription
+- [ ] Test pipeline completo: Aria → FEX-Emu → ZMQ → aria-guard
+- [ ] Probar RGB + SLAM + IMU combinado con profile12
+
+> **Importante:** Usar siempre `PYTHONNOUSERSITE=1` al ejecutar bajo FEX-Emu.
+> **Importante:** Usar `profile12` (no profile28) y subscribirse SOLO a RGB para evitar crashes.

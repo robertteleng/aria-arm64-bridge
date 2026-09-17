@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>ARIA Bridge — Sensor Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css">
+<style>
+  :root {
+    --bg: #0b0e14; --panel: #131722; --panel2: #1a2030; --border: #232a3d;
+    --text: #d8dee9; --dim: #6b7489; --accent: #4fd1c5; --accent2: #f6ad55;
+    --green: #68d391; --red: #fc8181; --blue: #63b3ed; --purple: #b794f4;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.45 'SF Mono', 'Cascadia Code', monospace; padding: 14px; }
+  h1 { font-size: 15px; letter-spacing: 2px; color: var(--accent); margin-bottom: 2px; }
+  .sub { color: var(--dim); font-size: 11px; margin-bottom: 14px; }
+  .grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; grid-template-rows: auto auto auto; gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
+  .card h2 { font-size: 10px; letter-spacing: 1.5px; color: var(--dim); text-transform: uppercase; margin-bottom: 8px; }
+  .card h2 .rate { float: right; color: var(--accent); }
+  .video { grid-row: span 2; display: flex; flex-direction: column; }
+  .video img { width: 100%; border-radius: 6px; background: #000; flex: 1; object-fit: contain; }
+  .slam img { width: 100%; border-radius: 6px; background: #000; }
+  .chart-card .u-legend { font-size: 9px !important; }
+  .statgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .stat { background: var(--panel2); border-radius: 8px; padding: 8px 10px; }
+  .stat .v { font-size: 18px; color: var(--green); font-weight: 700; }
+  .stat .l { font-size: 9px; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; }
+  #compass-wrap { display: flex; align-items: center; gap: 14px; }
+  #compass { background: var(--panel2); border-radius: 50%; }
+  .baro-v { font-size: 22px; color: var(--accent2); font-weight: 700; }
+  .dim { color: var(--dim); }
+  .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--red); margin-right: 6px; }
+  .dot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
+</style>
+</head>
+<body>
+<h1><span class="dot" id="livedot"></span>ARIA BRIDGE — SENSOR DASHBOARD</h1>
+<div class="sub">Jetson Orin Nano · FEX-Emu · profile12 · <span id="uptime">—</span>s uptime</div>
+
+<div class="grid">
+  <div class="card video">
+    <h2>RGB 1408×1408 <span class="rate" id="r-rgb">— fps</span></h2>
+    <img src="/feed/rgb" alt="rgb">
+  </div>
+
+  <div class="card slam">
+    <h2>SLAM 1 · 640×480 <span class="rate" id="r-slam1">— fps</span></h2>
+    <img src="/feed/slam1" alt="slam1">
+  </div>
+
+  <div class="card slam">
+    <h2>SLAM 2 · 640×480 <span class="rate" id="r-slam2">— fps</span></h2>
+    <img src="/feed/slam2" alt="slam2">
+  </div>
+
+  <div class="card chart-card">
+    <h2>IMU1 — Acelerómetro m/s² <span class="rate" id="r-imu1">— Hz</span></h2>
+    <div id="accel"></div>
+  </div>
+
+  <div class="card chart-card">
+    <h2>IMU1 — Giroscopio rad/s</h2>
+    <div id="gyro"></div>
+  </div>
+
+  <div class="card">
+    <h2>Magnetómetro <span class="rate" id="r-mag">— Hz</span></h2>
+    <div id="compass-wrap">
+      <canvas id="compass" width="120" height="120"></canvas>
+      <div>
+        <div class="baro-v" id="heading">—°</div>
+        <div class="dim" id="magxyz">x — · y — · z —</div>
+      </div>
+    </div>
+    <h2 style="margin-top:12px">Barómetro <span class="rate" id="r-baro">— Hz</span></h2>
+    <div class="baro-v" id="pressure">— hPa</div>
+    <div class="dim" id="temp">— °C</div>
+  </div>
+
+  <div class="card" style="grid-column: span 3">
+    <h2>Pipeline</h2>
+    <div class="statgrid">
+      <div class="stat"><div class="v" id="s-rgb">0</div><div class="l">RGB frames</div></div>
+      <div class="stat"><div class="v" id="s-slam">0</div><div class="l">SLAM frames</div></div>
+      <div class="stat"><div class="v" id="s-imu">0</div><div class="l">IMU samples</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const N = 200;
+const dark = { stroke: "#232a3d", grid: { stroke: "#1a2030" }, ticks: { stroke: "#232a3d" } };
+function mkChart(el, labels, colors) {
+  const opts = {
+    width: el.clientWidth || 420, height: 150,
+    series: [ {}, ...labels.map((l, i) => ({ label: l, stroke: colors[i], width: 1.4 })) ],
+    axes: [ { ...dark, font: "9px monospace", labelFont: "9px monospace", stroke: "#6b7489" },
+            { ...dark, font: "9px monospace", stroke: "#6b7489" } ],
+    legend: { live: false },
+    cursor: { show: false },
+  };
+  return new uPlot(opts, [[], [], [], []], el);
+}
+const accel = mkChart(document.getElementById("accel"), ["ax","ay","az"], ["#63b3ed","#68d391","#fc8181"]);
+const gyro  = mkChart(document.getElementById("gyro"),  ["gx","gy","gz"], ["#b794f4","#f6ad55","#4fd1c5"]);
+
+function drawCompass(deg) {
+  const c = document.getElementById("compass").getContext("2d");
+  c.clearRect(0, 0, 120, 120);
+  c.strokeStyle = "#232a3d"; c.lineWidth = 2;
+  c.beginPath(); c.arc(60, 60, 52, 0, 2*Math.PI); c.stroke();
+  c.fillStyle = "#6b7489"; c.font = "9px monospace"; c.textAlign = "center";
+  c.fillText("N", 60, 16); c.fillText("S", 60, 110); c.fillText("E", 106, 63); c.fillText("O", 14, 63);
+  if (deg === null) return;
+  const a = (deg - 90) * Math.PI / 180;
+  c.strokeStyle = "#4fd1c5"; c.lineWidth = 3; c.lineCap = "round";
+  c.beginPath(); c.moveTo(60, 60); c.lineTo(60 + 40*Math.cos(a), 60 + 40*Math.sin(a)); c.stroke();
+  c.fillStyle = "#4fd1c5"; c.beginPath(); c.arc(60, 60, 4, 0, 2*Math.PI); c.fill();
+}
+drawCompass(null);
+
+const es = new EventSource("/events");
+let lastMsg = 0;
+es.onmessage = (e) => {
+  lastMsg = Date.now();
+  const d = JSON.parse(e.data);
+  document.getElementById("uptime").textContent = d.uptime;
+  const r = d.rates || {};
+  const set = (id, v, unit) => document.getElementById(id).textContent = (v !== undefined ? v : "—") + " " + unit;
+  set("r-rgb", r.rgb, "fps"); set("r-slam1", r.slam1, "fps"); set("r-slam2", r.slam2, "fps");
+  set("r-imu1", r.imu1, "Hz"); set("r-mag", r.mag, "Hz"); set("r-baro", r.baro, "Hz");
+
+  if (d.imu1 && d.imu1.length) {
+    const t = d.imu1.map(s => s[0]);
+    accel.setData([t, d.imu1.map(s=>s[1]), d.imu1.map(s=>s[2]), d.imu1.map(s=>s[3])]);
+    gyro.setData([t, d.imu1.map(s=>s[4]), d.imu1.map(s=>s[5]), d.imu1.map(s=>s[6])]);
+  }
+  if (d.heading !== null) {
+    document.getElementById("heading").textContent = d.heading.toFixed(0) + "°";
+    drawCompass(d.heading);
+  }
+  if (d.mag) {
+    const f = (x) => (x*1e6).toFixed(1);
+    document.getElementById("magxyz").textContent = `x ${f(d.mag[0])} · y ${f(d.mag[1])} · z ${f(d.mag[2])} µT`;
+  }
+  if (d.baro) {
+    document.getElementById("pressure").textContent = (d.baro[0]/100).toFixed(1) + " hPa";
+    document.getElementById("temp").textContent = d.baro[1].toFixed(1) + " °C";
+  }
+  const c = d.counts || {};
+  document.getElementById("s-rgb").textContent = c.rgb || 0;
+  document.getElementById("s-slam").textContent = (c.slam1 || 0) + (c.slam2 || 0);
+  document.getElementById("s-imu").textContent = (c.imu1 || 0) + (c.imu2 || 0);
+};
+setInterval(() => {
+  document.getElementById("livedot").className = "dot" + (Date.now() - lastMsg < 2000 ? " live" : "");
+}, 1000);
+</script>
+</body>
+</html>

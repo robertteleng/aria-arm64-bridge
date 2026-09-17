@@ -1,0 +1,32 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --group dev --locked
+      - name: Test (no glasses, no FEX-Emu)
+        run: uv run pytest -q
+
+  cpp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install libzmq
+        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev
+      - name: Build libariabridge
+        run: cmake -S src/libariabridge -B build/cpp -DCMAKE_BUILD_TYPE=Release && cmake --build build/cpp -j
+      - name: Unit tests
+        run: build/cpp/ariabridge_tests --unit
